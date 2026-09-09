@@ -8,6 +8,17 @@
 
   References the private DNS zones created in 01-network.bicep by name
   rather than recreating them. Deploy 01-network.bicep first.
+
+  This file only ADDS the private endpoint -- it doesn't flip Search's own
+  publicNetworkAccess to Disabled (that's a one-property update on an
+  already-existing, already-configured service; redeclaring it as a full
+  Bicep resource block here risks resetting settings -- replica/partition
+  count, etc. -- that aren't repeated in this file). That flip happens via
+  `az search service update --public-network-access disabled`, run
+  automatically by infra/hooks/postprovision.sh after `azd provision`.
+  Storage and ACR are deliberately left alone: Storage's public access was
+  already governance-locked Disabled before this project started, and ACR
+  stays public on purpose (az acr build has no VNet-reachable equivalent).
 */
 
 @description('Azure region. Must match the VNet and existing resources region.')

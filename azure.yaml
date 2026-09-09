@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: foundry-iq-v2
+metadata:
+  template: foundry-iq-v2@0.1.0
+
+# No `services:` -- there is no azd-native deploy target here (Foundry
+# hosted-agent registration is a raw data-plane REST call to the project
+# endpoint, not one of azd's built-in service hosts, and it can only run
+# from inside the VNet -- see infra/hooks/postprovision.sh and
+# scripts/jumpbox_setup.sh). azd's job here is `provision` (the Bicep in
+# infra/) plus the postprovision hook that automates everything else that
+# CAN run from outside the VNet.
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+hooks:
+  postprovision:
+    shell: sh
+    run: ./infra/hooks/postprovision.sh
+    interactive: true
+    continueOnError: false

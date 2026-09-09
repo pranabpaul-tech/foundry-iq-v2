@@ -11,7 +11,7 @@ private endpoint.
 flowchart TB
     subgraph internet["Internet"]
         teamsUser["Teams user<br/>(tenant member)"]
-        devMachine["Normal dev machine<br/>(build_search_index.py,<br/>build_and_push_agent.sh)"]
+        devMachine["Normal dev machine<br/>(azd provision, build_and_push_agent.sh)"]
     end
 
     subgraph azure["Azure -- rg-foundryiq-v2 (UK South)"]
@@ -45,7 +45,7 @@ flowchart TB
             mcpSubnet["mcp-subnet (reserved, unused)"]
         end
 
-        search["AI Search foundryiqv2pau4search<br/>aw-docs-index -- stays public"]
+        search["AI Search foundryiqv2pau4search<br/>aw-docs-index -- publicNetworkAccess: Disabled"]
         storage["Storage foundryiqv2pau4stor<br/>aw-docs container"]
         acr["ACR acrfoundryiqv2pau4 -- stays public"]
         cosmos["Cosmos DB foundryiqv25hdbcosmos"]
@@ -54,8 +54,7 @@ flowchart TB
 
     teamsUser -- "Teams message" --> botService
     botService -- "Activity Protocol<br/>(source-IP-filtered exception)" --> foundry
-    devMachine -. "build/push image (public)" .-> acr
-    devMachine -. "index docs (public)" .-> search
+    devMachine -. "azd provision, build/push image (public)" .-> acr
 
     peFoundry -.-> foundry
     peSearch -.-> search
@@ -65,7 +64,8 @@ flowchart TB
 
     kbInproc --> peSearch
     toolbox -- "private link" --> fabric
-    jumpbox -. "az login, data-plane calls" .-> foundry
+    jumpbox -. "az login, build index, register agents" .-> foundry
+    jumpbox -. "az login, build index" .-> peSearch
 ```
 
 `kb-agent` and `courier-agent` are also independently registered as their own hosted
@@ -77,13 +77,17 @@ orchestrator required.
 - An Azure subscription with: Contributor on the target resource group, a Microsoft
   Foundry (Cognitive Services) resource provider with hosted-agent preview features
   available, and Microsoft Fabric capacity licensing (an F-SKU).
-- **Azure CLI** (`az`), with the Bicep extension: `az bicep install`.
-- **Python 3.10+** — for `scripts/build_search_index.py`. Docker is not required
-  locally: agent images build cloud-side via ACR Tasks (`az acr build`).
-- `az login` access to the subscription (for infra deploys and any command run
-  from a normal dev machine) and `az container exec` access to the jumpbox (for
-  the data-plane steps that must run from inside the VNet — see "Step-by-step
-  setup" below for which is which).
+- **Azure Developer CLI** (`azd`) — provisions all the infra in one command. Includes
+  its own Bicep support; a separate Bicep install isn't needed.
+- **Azure CLI** (`az`) — used directly by `azd`'s hooks and by the jumpbox scripts.
+- **Python** is not required locally — `scripts/build_search_index.py` only ever runs
+  from the jumpbox (Search is private-endpoint-only), which provisions its own Python
+  as part of `scripts/jumpbox_setup.sh`. Docker is not required locally either: agent
+  images build cloud-side via ACR Tasks (`az acr build`).
+- `azd auth login` / `az login` access to the subscription, and `az container exec`
+  access to the jumpbox for the one manual step "Step-by-step setup" below calls out.
+- On Windows, the `postprovision` hook runs as `sh` — Git Bash (already needed for the
+  `scripts/*.sh` files generally) provides that; WSL works too.
 
 ## Configuration (`.env`)
 
@@ -91,18 +95,22 @@ orchestrator required.
 cp .env.example .env
 ```
 
-`.env.example` (repo root) lists every variable the scripts and agents read, grouped
-by what needs it:
+`.env.example` (repo root) lists every variable the scripts and agents read. Most of
+it is filled in for you automatically: `infra/main.bicep`'s outputs are named to match
+these variables exactly, so `azd env get-values > .env` (run automatically by
+`infra/hooks/postprovision.sh` after every `azd provision`) produces a working `.env`
+with no manual endpoint copy-pasting. The table below is for reference — what each
+variable is, and where its value would come from if you ever need to set one by hand:
 
 | Variable | Used by | Where it comes from |
 |---|---|---|
-| `FOUNDRY_PROJECT_ENDPOINT` | every agent, `build_search_index.py` | `az cognitiveservices account show` output, after step 4 below |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | every agent, `build_search_index.py` | set by `infra/03-foundry-account.bicep` — default `gpt-4.1` |
-| `AZURE_SEARCH_ENDPOINT` | `kb-agent`, `orchestrator-agent`, `build_search_index.py` | your AI Search resource |
-| `AZURE_OPENAI_ENDPOINT` | `build_search_index.py` | same Foundry account as above, OpenAI-compatible endpoint |
-| `AZURE_EMBEDDING_MODEL_DEPLOYMENT_NAME` | `build_search_index.py` | set by `infra/03-foundry-account.bicep` — default `text-embedding-3-large` |
+| `FOUNDRY_PROJECT_ENDPOINT` | every agent, `build_search_index.py` | `main.bicep` output, via `azd provision` |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | every agent, `build_search_index.py` | `main.bicep` output — default `gpt-4.1` |
+| `AZURE_SEARCH_ENDPOINT` | `kb-agent`, `orchestrator-agent`, `build_search_index.py` | `main.bicep` output |
+| `AZURE_OPENAI_ENDPOINT` | `build_search_index.py` | `main.bicep` output — same Foundry account, OpenAI-compatible endpoint |
+| `AZURE_EMBEDDING_MODEL_DEPLOYMENT_NAME` | `build_search_index.py` | `main.bicep` output — default `text-embedding-3-large` |
 | `AZURE_SEARCH_INDEX_NAME` / `AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME` / `AZURE_SEARCH_KNOWLEDGE_BASE_NAME` | `build_search_index.py`, `kb-agent`, `orchestrator-agent` | names it creates — defaults are fine unless you want different names |
-| `SUBSCRIPTION_ID` / `RESOURCE_GROUP` / `ACCOUNT_NAME` / `PROJECT_NAME` / `ACR_NAME` / `ACR_LOGIN_SERVER` | the shell scripts in `scripts/` | your actual resource names — only needed if they differ from each script's built-in defaults |
+| `SUBSCRIPTION_ID` / `RESOURCE_GROUP` / `ACCOUNT_NAME` / `PROJECT_NAME` / `ACR_NAME` / `ACR_LOGIN_SERVER` / `SEARCH_NAME` / `STORAGE_NAME` / `JUMPBOX_NAME` / `FABRIC_CAPACITY_NAME` | the shell scripts in `scripts/` | `main.bicep` outputs — override only if you want different names than what `azd provision` created |
 
 Python code (`load_dotenv()`) finds this root `.env` automatically no matter which
 subdirectory you run it from. The shell scripts read plain environment variables —
@@ -115,7 +123,7 @@ script's own hardcoded defaults if your resource names match this project's.
 
 - `foundryiqv2p3ygk` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
 - `foundryiqv2-vnet` — VNet, 4 subnets (agent, pe, mcp, jumpbox), 12 private DNS zones
-- `foundryiqv2pau4search` — AI Search (semantic search, index `aw-docs-index`) — stays public, private endpoint added alongside
+- `foundryiqv2pau4search` — AI Search (semantic search, index `aw-docs-index`) — `publicNetworkAccess: Disabled`, private endpoint only (flipped by `infra/hooks/postprovision.sh`; the knowledge-base build now runs from the jumpbox — see "Knowledge base" below)
 - `foundryiqv2pau4stor` — Storage (`aw-docs` container) — public network access locked `Disabled` by tenant policy; private endpoint added
 - `acrfoundryiqv2pau4` — ACR (Premium) — stays public (used by `az acr build`), private endpoint added alongside
 - `foundryiqv25hdbcosmos` — Cosmos DB for NoSQL (required by Foundry's standard agent setup) — private endpoint only
@@ -126,9 +134,12 @@ script's own hardcoded defaults if your resource names match this project's.
 
 ## Repo layout
 
+- `azure.yaml` — the `azd` project definition (infra path + the `postprovision` hook)
 - `agents/` — `kb-agent/`, `courier-agent/`, `orchestrator-agent/` (see "Agents" below)
-- `infra/` — numbered Bicep files, one per deployment step (see "Infra" below)
-- `scripts/` — deployment/operational scripts (shell + `build_search_index.py`)
+- `infra/` — `main.bicep` (the `azd provision` entry point) composing the numbered
+  Bicep files as modules, plus `hooks/postprovision.sh` (see "Infra" below)
+- `scripts/` — operational scripts (shell + `build_search_index.py`); `jumpbox_setup.sh`
+  is the one that runs from inside the jumpbox (see "Step-by-step setup" below)
 - `data/aw-docs/` — the 3 source PDFs the knowledge base is built from (see "Knowledge base" below)
 - `.env.example` — copy to `.env` and fill in (see "Configuration" above)
 
@@ -145,15 +156,28 @@ script's own hardcoded defaults if your resource names match this project's.
 
 ## Infra (`infra/`)
 
-Numbered by deployment order — `01` and `02` have no dependency on each other's
-completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only needs `01`:
-
+- `main.bicep` — the `azd provision` entry point. Composes `01`, `02`, `03`, `04`, and
+  `06` below as modules, with outputs wired automatically into the next module's
+  params (subnet IDs, resource names) — one `azd provision` run deploys all five in
+  correct dependency order, instead of five separate `az deployment group create`
+  calls with IDs copy-pasted by hand between them.
+- `main.parameters.json` — deliberately near-empty: every param either has a safe
+  Bicep-level default (matching what's already deployed) or no default at all, in
+  which case `azd provision` prompts for it interactively (`searchName`, `storageName`,
+  `acrName` — the pre-existing resources this project attaches to).
+- `hooks/postprovision.sh` — runs automatically after `azd provision`; see
+  "Step-by-step setup" below for exactly what it does.
 - `01-network.bicep` — VNet + 3 subnets + 12 private DNS zones (`modules/vnet.bicep`, `modules/dns-zones.bicep`)
 - `02-data-services.bicep` — private endpoints for the *existing* Search/Storage/ACR (no recreation) + new Cosmos DB + Log Analytics
 - `03-foundry-account.bicep` — the network-injected Foundry account + project + model deployments + capability host + RBAC + connections (Cosmos/Storage/Search/ACR)
 - `04-jumpbox.bicep` — the ACI jumpbox + its subnet
-- `05-bot-service.bicep` — Bot Service + Teams channel, fronting the private `orchestrator-agent` (see "Bot Service / Teams" below)
 - `06-fabric-capacity.bicep` — the Fabric capacity (see "Fabric capacity & artifacts" below)
+
+`05-bot-service.bicep` (Bot Service + Teams channel) is deliberately **not** composed
+into `main.bicep`: it needs `orchestrator-agent`'s `instance_identity.client_id` as
+`msaAppId`, which only exists after the agent is registered — itself only possible
+after `azd provision` finishes. It stays a separate, optional follow-on deployment —
+see "Bot Service / Teams" below.
 
 ## Step-by-step setup (fresh environment)
 
@@ -163,81 +187,98 @@ completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only ne
    cd foundry-iq-v2
    cp .env.example .env
    ```
-   Fill in `SUBSCRIPTION_ID`/`RESOURCE_GROUP` now; the rest get filled in as you go.
 
-2. **Deploy the network.**
+2. **Authenticate and point `azd` at this resource group.**
    ```sh
-   az deployment group create -g rg-foundryiq-v2 -f infra/01-network.bicep
+   azd auth login
+   azd env new foundryiq-v2
+   azd env set AZURE_RESOURCE_GROUP rg-foundryiq-v2
    ```
+   This is a [resource-group-scoped deployment](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/resource-group-scoped-deployments)
+   (an azd beta feature) — `main.bicep` deploys *into* this existing resource group
+   rather than having `azd` create a new one. If you skip `azd env set`, `azd
+   provision` prompts you to pick an existing resource group or create one instead.
 
-3. **Add private endpoints to your existing Search/Storage/ACR + deploy Cosmos DB.**
+3. **Provision everything.**
    ```sh
-   az deployment group create -g rg-foundryiq-v2 -f infra/02-data-services.bicep \
-     --parameters searchName=<name> storageName=<name> acrName=<name> \
-                  vnetName=foundryiqv2-vnet peSubnetName=pe-subnet
+   azd provision
    ```
+   Deploys the network, private endpoints for your existing Search/Storage/ACR (+ new
+   Cosmos DB), the Foundry account/project, the jumpbox, and the Fabric capacity — all
+   in one command, in dependency order. `azd` prompts for `searchName`, `storageName`,
+   and `acrName` the first time (your pre-existing resources this project attaches
+   to). The Foundry account's capability-host step normally takes 30–35 minutes —
+   that's expected, not a hang.
 
-4. **Deploy the Foundry account + project.** The capability-host step normally takes
-   30–35 minutes — that's expected, not a hang.
-   ```sh
-   az deployment group create -g rg-foundryiq-v2 -f infra/03-foundry-account.bicep \
-     --parameters agentSubnetId=<id> peSubnetId=<id> \
-                  searchName=<name> storageName=<name> cosmosName=<name>
-   ```
-   Then fill `.env`'s `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_SEARCH_ENDPOINT`, and
-   `AZURE_OPENAI_ENDPOINT` from:
-   ```sh
-   az cognitiveservices account show -g rg-foundryiq-v2 -n <account-name> --query properties.endpoints
-   ```
+   `infra/hooks/postprovision.sh` then runs automatically:
+   - Writes `.env` from the deployment's outputs (`azd env get-values > .env`) — no
+     manual endpoint copy-pasting.
+   - Makes Azure AI Search private (`publicNetworkAccess: Disabled` — its private
+     endpoint already exists from `azd provision` itself; this is the one remaining
+     property flip a fresh Bicep redeclaration would risk getting wrong on an
+     already-configured service, so it's a plain `az search service update` instead).
+   - Builds and pushes all three agent images via ACR Tasks (no local Docker needed).
+   - Resumes the Fabric capacity and ensures a workspace exists
+     (`scripts/provision_fabric_workspace.sh`).
+   - Prints the one remaining manual step (next).
 
-5. **Deploy the jumpbox** (used for every data-plane call the private project endpoint
-   requires — registering agents, granting RBAC, the Fabric/Teams REST calls below).
+4. **The one manual step: build the knowledge base and register the agents, from
+   inside the jumpbox.** This can't be automated further — it needs a real
+   interactive sign-in (a human completing a device-code prompt) and network access
+   to the now-private Search/project data planes, both only reachable from inside the
+   VNet.
    ```sh
-   az deployment group create -g rg-foundryiq-v2 -f infra/04-jumpbox.bicep --parameters vnetName=foundryiqv2-vnet
    az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
      --exec-command "az login --use-device-code"
    ```
-   Complete the device-code prompt. Every later "from inside the jumpbox" step reuses
-   this same `az container exec ... --exec-command "<command>"` pattern.
-
-6. **Build the knowledge base** (from a normal dev machine — Search stayed public).
-   See "Knowledge base: PDFs, chunking, and embedding" below for what this does.
+   Complete the device-code prompt, then:
    ```sh
-   pip install -r scripts/requirements.txt
-   az login
-   python scripts/build_search_index.py
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/jumpbox_setup.sh -o /tmp/jumpbox_setup.sh"
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "sh /tmp/jumpbox_setup.sh"
+   ```
+   (Two separate calls, not one piped command — `--exec-command` has no shell behind
+   it and splits on whitespace with no quote preservation, so a pipe never survives
+   it. See the comment at the top of `scripts/jumpbox_setup.sh`.) This one script
+   installs its own Python, builds the knowledge base (see "Knowledge base" below),
+   and registers + RBAC-grants all three agents.
+
+5. **Create the Fabric toolbox connection**, from inside the jumpbox, once you have a
+   configured Fabric Data Agent (see "Fabric capacity & artifacts" below if you're
+   starting from scratch):
+   ```sh
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/create_fabric_toolbox.sh -o /tmp/create_fabric_toolbox.sh"
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "sh /tmp/create_fabric_toolbox.sh <fabric-workspace-id> <fabric-data-agent-id>"
    ```
 
-7. **Provision (or point at) a Fabric workspace + Data Agent.** If you don't already
-   have one, see "Fabric capacity & artifacts" below for `provision_fabric_workspace.sh`.
-   Then, from inside the jumpbox, create the toolbox connection:
-   ```sh
-   scripts/create_fabric_toolbox.sh <fabric-workspace-id> <fabric-data-agent-id>
-   ```
-
-8. **Build, push, and register each agent** (`kb-agent`, `courier-agent`,
-   `orchestrator-agent`) — see "Deploying agent updates" below for the exact two-step
-   command sequence and the RBAC each agent identity needs. Run it once per agent.
-
-9. **(Optional) Publish `orchestrator-agent` to Microsoft Teams** — see "Bot Service /
+6. **(Optional) Publish `orchestrator-agent` to Microsoft Teams** — see "Bot Service /
    Teams" below.
 
-10. **Verify** — see "Verification" below.
+7. **Verify** — see "Verification" below.
 
 ## Knowledge base: PDFs, chunking, and embedding
 
 Source PDFs live in `data/aw-docs/` (checked into this repo, 3 files). Add, remove, or
 replace PDFs there to change what `kb-agent`/`orchestrator-agent` can answer from — no
 code changes needed, `scripts/build_search_index.py` picks up every `*.pdf` in that
-directory automatically.
-
+directory automatically. `scripts/jumpbox_setup.sh` runs it as part of initial setup
+(step 4 above); to rebuild later (after editing the PDFs), from inside the jumpbox:
 ```sh
-pip install -r scripts/requirements.txt
-az login
-python scripts/build_search_index.py
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/jumpbox_setup.sh -o /tmp/jumpbox_setup.sh"
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "sh /tmp/jumpbox_setup.sh"
 ```
+(This re-runs agent registration too, which creates new agent versions each time —
+harmless, but if you only want to rebuild the index, adapt the script's first half or
+run `build_search_index.py` directly with the same env vars.)
 
-What it does, in order:
+This has to run from inside the jumpbox: both Search and the Foundry account's
+OpenAI-compatible endpoint (used for embeddings) are private-endpoint-only. What it
+does, in order:
 
 1. Extracts text from every PDF in `data/aw-docs/` (`pypdf`).
 2. Splits each document's text into chunks — `CHUNK_SIZE_CHARS = 2000` characters with
@@ -256,9 +297,11 @@ of duplicating them.
 
 ## Deploying agent updates
 
-`azd deploy` doesn't work here — it can't reach the private project endpoint from
-outside the VNet, and can't build images from inside the jumpbox (no Docker there).
-Two steps instead:
+For updating a single already-deployed agent later (not the initial setup, which
+`scripts/jumpbox_setup.sh` handles for all three at once — see "Step-by-step setup"
+above). `azd deploy` doesn't work here — it can't reach the private project endpoint
+from outside the VNet, and can't build images from inside the jumpbox (no Docker
+there). Two steps instead:
 
 1. **Build + push the image** (from a normal dev machine — ACR stayed public):
    `scripts/build_and_push_agent.sh kb-agent`
@@ -291,12 +334,26 @@ caller can't satisfy either Bot Service authorization scheme (`BotServiceRbac`/
 `BotServiceTenant` both need a real per-caller Entra token, which only Teams carries
 through to Foundry).
 
-**Setup, from inside the jumpbox:**
+**Setup, from inside the jumpbox** (same two-call `curl`-then-`sh` pattern as the other
+jumpbox scripts — see step 4 in "Step-by-step setup" above for why it's two calls):
 ```sh
-scripts/enable_agent_teams_endpoint.sh orchestrator-agent BotServiceTenant
-# then deploy infra/05-bot-service.bicep with msaAppId = the agent's
-# instance_identity.client_id (printed by the script above), then:
-scripts/publish_agent_to_teams.sh orchestrator-agent
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/enable_agent_teams_endpoint.sh -o /tmp/enable_agent_teams_endpoint.sh"
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "sh /tmp/enable_agent_teams_endpoint.sh orchestrator-agent BotServiceTenant"
+```
+Then deploy `infra/05-bot-service.bicep` with `msaAppId` = the agent's
+`instance_identity.client_id` (printed by the script above):
+```sh
+az deployment group create -g rg-foundryiq-v2 -f infra/05-bot-service.bicep \
+  --parameters msaAppId=<client-id> tenantId=<tenant-id>
+```
+Then, back on the jumpbox, publish to Teams:
+```sh
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/publish_agent_to_teams.sh -o /tmp/publish_agent_to_teams.sh"
+az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+  --exec-command "sh /tmp/publish_agent_to_teams.sh orchestrator-agent"
 ```
 The publish step (Microsoft 365 app publish) is required -- without it, a Teams deep
 link built from the raw agent identity App ID resolves to nothing ("couldn't find the
@@ -307,7 +364,8 @@ Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.micro
 ## Fabric capacity & artifacts
 
 The Fabric capacity lives in this resource group as `foundryiqv2fabric` (F64), under
-Bicep (`infra/06-fabric-capacity.bicep`).
+Bicep (`infra/06-fabric-capacity.bicep`, composed into `infra/main.bicep` — deployed
+automatically by `azd provision`, no separate step needed).
 
 `Microsoft.Fabric/capacities` is a real ARM resource type — the capacity itself is
 fully Bicep-managed. Everything *inside* Fabric — workspaces, and every item type in
@@ -320,9 +378,13 @@ script-based equivalent for those — idempotent find-or-create for a workspace
 
 `state` (Active/Paused) is a read-only ARM property — Bicep/PUT can't set it, only a
 dedicated resume/suspend action can: `scripts/set_fabric_capacity_state.sh resume|suspend`.
+`infra/hooks/postprovision.sh` already calls both this (resume) and
+`provision_fabric_workspace.sh` once as part of `azd provision` — the commands below
+are for later, e.g. suspending the capacity to stop billing when you're not using it:
 
 ```sh
-scripts/set_fabric_capacity_state.sh resume            # capacity must be Active first
+scripts/set_fabric_capacity_state.sh suspend
+scripts/set_fabric_capacity_state.sh resume     # before using the Fabric tool again
 scripts/provision_fabric_workspace.sh foundryiq-workspace foundryiqv2fabric
 ```
 
@@ -330,7 +392,7 @@ Items created this way are empty shells — a Lakehouse with no tables, an Ontol
 no schema, a Data Agent with no configured data source. Configure them (load tables,
 define the ontology schema, wire the Data Agent's data source + instructions) from the
 Fabric portal, then point `scripts/create_fabric_toolbox.sh` at the resulting workspace
-ID and Data Agent ID (step 7 in "Step-by-step setup" above).
+ID and Data Agent ID (step 5 in "Step-by-step setup" above).
 
 ## Verification
 
