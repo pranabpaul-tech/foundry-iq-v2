@@ -52,7 +52,7 @@ flowchart TB
         storage["Storage foundryiqv2pau4stor<br/>aw-docs container"]
         acr["ACR acrfoundryiqv2pau4 -- stays public"]
         cosmos["Cosmos DB foundryiqv25hdbcosmos"]
-        fabric["Fabric capacity fabric3iq<br/>(rg-3iqdemo, external)"]
+        fabric["Fabric capacity foundryiqv2fabric<br/>(F64, this resource group)"]
     end
 
     teamsUser -- "Teams message" --> botService
@@ -119,7 +119,7 @@ working end-to-end.
 - `law-foundryiqv2-*` — Log Analytics workspace (for Application Insights / agent tracing)
 - `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — see below
 - `foundryiq-orchestrator-bot` — Bot Service (`publicNetworkAccess: Enabled`), MS Teams channel, fronting `orchestrator-agent` — see "Bot Service / Teams" below
-- Fabric capacity `fabric3iq` (`rg-3iqdemo`) — external to this resource group; must be **Active** (not Paused) for the Fabric tool to work
+- `foundryiqv2fabric` — Fabric capacity (F64), under Bicep (`infra/06-fabric-capacity.bicep`); must be **Active** (not Paused) for the Fabric tool to work — see "Fabric capacity & artifacts" below
 
 ## Why the jumpbox is a container, not a VM
 
@@ -160,6 +160,7 @@ completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only ne
 - `03-foundry-account.bicep` — the network-injected Foundry account + project + model deployments + capability host + RBAC + connections (Cosmos/Storage/Search/ACR)
 - `04-jumpbox.bicep` — the ACI jumpbox + its subnet
 - `05-bot-service.bicep` — Bot Service + Teams channel, fronting the private `orchestrator-agent` (see "Bot Service / Teams" below)
+- `06-fabric-capacity.bicep` — the Fabric capacity (see "Fabric capacity & artifacts" below)
 
 ## Setup sequence (fresh environment)
 
@@ -236,6 +237,64 @@ link built from the raw agent identity App ID resolves to nothing ("couldn't fin
 bot"), even with the Bot Service resource and Foundry endpoint correctly wired up.
 
 Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/publish-copilot-virtual-network).
+
+## Fabric capacity & artifacts
+
+The Fabric capacity now lives in this resource group as `foundryiqv2fabric` (F64),
+under Bicep (`infra/06-fabric-capacity.bicep`). It replaces `fabric3iq`, which was
+created manually in a separate resource group (`rg-3iqdemo`) before this project
+started.
+
+**Why it's a new capacity, not the original one moved:** a direct ARM resource-group
+move of `fabric3iq` was attempted first and failed with
+`ResourceMoveTimedOut: Move resources for provider 'Microsoft.Fabric' did not finish
+within allowed time '00:15:00'` -- confirmed as a known limitation (Microsoft's own
+guidance for cross-group Fabric moves is to provision a new capacity in the target
+group and reassign workspaces to it, not rely on ARM move), not a one-off failure worth
+retrying. So that's what happened instead: `foundryiqv2fabric` deployed here via Bicep,
+the one workspace that was on `fabric3iq` (`awworkspace`) reassigned to it via the
+Fabric REST API (`POST /v1/workspaces/{id}/assignToCapacity` -- a workspace's ID, and
+everything in it, is unaffected by which capacity backs it), then `fabric3iq` deleted
+once confirmed empty. `scripts/create_fabric_toolbox.sh` needed no changes -- it points
+at the workspace/Data Agent by their own IDs, not the capacity.
+
+Region stayed **West US**, matching the original: Fabric workspaces are region-pinned
+to whatever capacity they're assigned to at creation, so reassigning across regions
+risks a data-residency change, not just a compute move -- this resource group already
+spans regions (UK South for most resources, West US for Fabric, `global` for DNS
+zones), which is normal for Azure resource groups.
+
+**How much of Fabric Bicep actually reaches:** `Microsoft.Fabric/capacities` is a real
+ARM resource type (stable API `2023-11-01`) — the capacity itself is fully
+Bicep-managed. Everything *inside* Fabric — workspaces, and every item type in them
+(Lakehouse, Data Agent, Ontology, notebooks, etc.) — has **no ARM resource type at
+all**. Those live entirely in the Fabric control plane, reachable only through the
+Fabric REST API (`api.fabric.microsoft.com`) — the same way `scripts/create_fabric_toolbox.sh`
+already talks to Fabric for the OBO connection. So there's no Bicep for
+workspaces/items; `scripts/provision_fabric_workspace.sh` is the script-based
+equivalent — idempotent find-or-create for a workspace (assigned to this capacity) plus
+Lakehouse, Ontology, and Data Agent item shells in it.
+
+**Note on capacity state:** `state` (Active/Paused) is a read-only ARM property —
+Bicep/PUT can't set it, only a dedicated resume/suspend action can.
+`scripts/set_fabric_capacity_state.sh resume|suspend` does that.
+
+```sh
+scripts/set_fabric_capacity_state.sh resume            # capacity must be Active first
+scripts/provision_fabric_workspace.sh foundryiq-workspace foundryiqv2fabric
+```
+
+Items created this way are empty shells — a Lakehouse with no tables, an Ontology with
+no schema, a Data Agent with no configured data source. Configuring them (loading
+tables, defining the ontology schema, wiring the Data Agent's data source +
+instructions) is a Fabric-portal/Fabric-SDK task that doesn't reduce to a single REST
+POST — do that once, then point `scripts/create_fabric_toolbox.sh` at the resulting
+workspace ID and Data Agent ID as before.
+
+This is additive: `provision_fabric_workspace.sh` creates a new workspace by default
+(`foundryiq-workspace`), separate from whatever workspace already backs the
+orchestrator's live Fabric toolbox — pass that workspace's own display name as the
+first argument to target it instead.
 
 ## Verification
 
