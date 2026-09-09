@@ -1,0 +1,5 @@
+azure-identity
+azure-search-documents>=11.7.0b2
+openai
+python-dotenv
+pypdf

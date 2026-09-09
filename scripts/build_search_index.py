@@ -1,22 +1,37 @@
 # Copyright (c) Microsoft. All rights reserved.
-"""Build a conventional (searchIndex-kind) Foundry IQ Knowledge Base.
+"""Chunk, embed, and index the PDFs in data/aw-docs/ into Azure AI Search,
+then wrap that index in a Foundry Knowledge Source + Knowledge Base.
 
-Fallback path: the `file`-kind knowledge source (used successfully in the
-prior POC) is currently rejected by the agentic-retrieval API ("not
-supported in this API version" -- a platform-side regression/rollout change,
-not something in our control), and `azureBlob`-kind is unusable because this
-tenant's governance policy hard-blocks Storage's public network access no
-matter how it's requested.
+Usage:
+    pip install -r scripts/requirements.txt
+    az login
+    python scripts/build_search_index.py
 
-`searchIndex` kind is the one fully-supported, stable option left that
-doesn't depend on either of those. This script does the ingestion work
-itself: extract text from the PDFs, chunk it, embed each chunk via the
-Foundry account's embedding deployment, push into a real Search index, then
-wrap that index in a SearchIndexKnowledgeSource + KnowledgeBase.
+Requires AZURE_SEARCH_ENDPOINT and AZURE_OPENAI_ENDPOINT to be set (see
+.env.example at the repo root) and reads PDFs from data/aw-docs/ -- add or
+replace PDFs there to reindex different documents, no code changes needed.
+
+What it does, in order:
+1. Extract text from every PDF in data/aw-docs/ (pypdf).
+2. Chunk each document's text (CHUNK_SIZE_CHARS with CHUNK_OVERLAP_CHARS
+   overlap, both below -- tune these constants directly if your documents
+   need different chunking).
+3. Embed each chunk via the Foundry account's embedding deployment
+   (AZURE_EMBEDDING_MODEL_DEPLOYMENT_NAME) and upload into a real Azure AI
+   Search index (create_index/embed_and_upload).
+4. Wrap that index in a SearchIndexKnowledgeSource + KnowledgeBase, which is
+   what kb-agent and orchestrator-agent actually query at runtime.
+
+Why a self-built searchIndex-kind pipeline, not Foundry's built-in `file`-
+or `azureBlob`-kind knowledge sources: `file`-kind is currently rejected by
+the agentic-retrieval API in this environment ("not supported in this API
+version"), and `azureBlob`-kind can't be used because this tenant's
+governance policy hard-blocks Storage's public network access. `searchIndex`
+kind is the fully-supported option that depends on neither.
 """
 
+import hashlib
 import os
-import uuid
 from pathlib import Path
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -59,12 +74,11 @@ INDEX_NAME = os.environ.get("AZURE_SEARCH_INDEX_NAME", "aw-docs-index")
 KNOWLEDGE_SOURCE_NAME = os.environ.get("AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME", "aw-docs-source")
 KNOWLEDGE_BASE_NAME = os.environ.get("AZURE_SEARCH_KNOWLEDGE_BASE_NAME", "aw-knowledge-base")
 
-PDF_DIR = Path(os.environ["AW_PDF_DIR"])
-PDF_FILES = [
-    "Adventure Works Inc. – Retail Customer Payment, Purchase, Shipping & Refund Information.pdf",
-    "Adventure Works Inc. – Retail Customer Terms and Conditions.pdf",
-    "Adventure Works Inc Retail Customer Support Representative Guide.pdf",
-]
+# Ships with the repo at data/aw-docs/ -- override AW_PDF_DIR only if your
+# source PDFs live somewhere else.
+DEFAULT_PDF_DIR = Path(__file__).resolve().parent.parent / "data" / "aw-docs"
+PDF_DIR = Path(os.environ.get("AW_PDF_DIR", DEFAULT_PDF_DIR))
+PDF_FILES = sorted(p.name for p in PDF_DIR.glob("*.pdf"))
 
 CHUNK_SIZE_CHARS = 2000
 CHUNK_OVERLAP_CHARS = 200
@@ -81,14 +95,20 @@ def chunk_text(text: str) -> list[str]:
 
 
 def extract_chunks() -> list[dict]:
+    if not PDF_FILES:
+        raise SystemExit(f"No PDFs found in {PDF_DIR}. Add PDFs there or set AW_PDF_DIR.")
     all_chunks = []
     for filename in PDF_FILES:
         path = PDF_DIR / filename
         reader = PdfReader(str(path))
         full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
         for i, chunk in enumerate(chunk_text(full_text)):
+            # Deterministic (not random) so re-running this script overwrites
+            # each chunk's existing document instead of adding a duplicate
+            # alongside it -- upload_documents upserts by this key.
+            chunk_id = hashlib.sha1(f"{filename}:{i}".encode("utf-8")).hexdigest()
             all_chunks.append({
-                "id": str(uuid.uuid4()),
+                "id": chunk_id,
                 "content": chunk,
                 "source_file": filename,
                 "chunk_index": i,

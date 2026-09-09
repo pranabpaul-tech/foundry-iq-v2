@@ -5,9 +5,6 @@ VNet-integrated Microsoft Foundry environment: `publicNetworkAccess:
 Disabled` on the Foundry account, and every dependent data service behind a
 private endpoint.
 
-See `.claude/plans/dazzling-watching-garden.md` (on the machine this was
-built on) for the full phased plan and decisions.
-
 ## Architecture
 
 ```mermaid
@@ -75,64 +72,65 @@ flowchart TB
 agent versions in the same project — reachable directly (from inside the VNet), no
 orchestrator required.
 
-Bot Service is the one deliberately public-facing piece: `publicNetworkAccess: Enabled`
-on the Bot Service resource itself, talking to the private Foundry account only through
-a service-managed, source-IP-filtered public exception that Foundry exposes for the
-Activity Protocol route alone (Bot Service/Microsoft 365 source ranges only —
-everything else on the project, Responses API and agent management, stays fully
-private). See "Bot Service / Teams" below for the full design rationale and the
-auth-scheme trade-offs that shaped it.
+## Prerequisites
 
-## Three hard-won findings that shaped this design
+- An Azure subscription with: Contributor on the target resource group, a Microsoft
+  Foundry (Cognitive Services) resource provider with hosted-agent preview features
+  available, and Microsoft Fabric capacity licensing (an F-SKU).
+- **Azure CLI** (`az`), with the Bicep extension: `az bicep install`.
+- **Python 3.10+** — for `scripts/build_search_index.py`. Docker is not required
+  locally: agent images build cloud-side via ACR Tasks (`az acr build`).
+- `az login` access to the subscription (for infra deploys and any command run
+  from a normal dev machine) and `az container exec` access to the jumpbox (for
+  the data-plane steps that must run from inside the VNet — see "Step-by-step
+  setup" below for which is which).
 
-1. **Foundry-to-Foundry A2A is broken.** `tasks/get` always returns `TaskNotFound` after
-   a successful `message/send` — confirmed via both raw JSON-RPC and the official
-   `A2APreviewTool` SDK path. `kb_agent`/`courier_agent` are wired into the orchestrator
-   in-process via `agent_framework.Agent.as_tool()` instead.
-2. **The "BYO VNet" template you get pointed at by default doesn't support MCP tools
-   behind the VNet.** `anihitk07/foundry-hosted-agents-e2e-samples`' `04-byo-vnet-private`
-   mirrors Microsoft's template **15**, whose README says outright it doesn't support
-   agent tools (MCP, OpenAPI, Functions, A2A) behind the VNet. Template **19**
-   (`azure-ai-foundry/foundry-samples`, `19-private-network-agent-tools`) does — its
-   supported-tools list explicitly names Fabric Data Agent and MCP, and it registers a
-   `privatelink.fabric.microsoft.com` DNS zone (real private-link support for Fabric,
-   not a guess). This repo's `infra/` is adapted from template 19, not 15.
-3. **Native web search *does* work behind this VNet posture.** This was flagged as an
-   open risk in the plan before building (web search isn't in template 19's
-   documented supported-tools list) — testing confirmed it works fine with no
-   workaround needed. `courier-agent` needs nothing special.
+## Configuration (`.env`)
 
-Also confirmed the hard way: a Foundry account's `networkInjections` is set at
-creation time and can't be retrofitted onto an existing account — there's no
-"convert to private" path, only "create a new private one." The original public
-account (`foundryiqv2pau4`) was decommissioned once this environment was verified
-working end-to-end.
+```sh
+cp .env.example .env
+```
+
+`.env.example` (repo root) lists every variable the scripts and agents read, grouped
+by what needs it:
+
+| Variable | Used by | Where it comes from |
+|---|---|---|
+| `FOUNDRY_PROJECT_ENDPOINT` | every agent, `build_search_index.py` | `az cognitiveservices account show` output, after step 4 below |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | every agent, `build_search_index.py` | set by `infra/03-foundry-account.bicep` — default `gpt-4.1` |
+| `AZURE_SEARCH_ENDPOINT` | `kb-agent`, `orchestrator-agent`, `build_search_index.py` | your AI Search resource |
+| `AZURE_OPENAI_ENDPOINT` | `build_search_index.py` | same Foundry account as above, OpenAI-compatible endpoint |
+| `AZURE_EMBEDDING_MODEL_DEPLOYMENT_NAME` | `build_search_index.py` | set by `infra/03-foundry-account.bicep` — default `text-embedding-3-large` |
+| `AZURE_SEARCH_INDEX_NAME` / `AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME` / `AZURE_SEARCH_KNOWLEDGE_BASE_NAME` | `build_search_index.py`, `kb-agent`, `orchestrator-agent` | names it creates — defaults are fine unless you want different names |
+| `SUBSCRIPTION_ID` / `RESOURCE_GROUP` / `ACCOUNT_NAME` / `PROJECT_NAME` / `ACR_NAME` / `ACR_LOGIN_SERVER` | the shell scripts in `scripts/` | your actual resource names — only needed if they differ from each script's built-in defaults |
+
+Python code (`load_dotenv()`) finds this root `.env` automatically no matter which
+subdirectory you run it from. The shell scripts read plain environment variables —
+either `export` the file first (`set -a; source .env; set +a`) or rely on each
+script's own hardcoded defaults if your resource names match this project's.
+
+`.env` is gitignored — never commit it.
 
 ## Resources (`rg-foundryiq-v2`, UK South)
 
 - `foundryiqv2p3ygk` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
 - `foundryiqv2-vnet` — VNet, 4 subnets (agent, pe, mcp, jumpbox), 12 private DNS zones
-- `foundryiqv2pau4search` — AI Search (semantic search, index `aw-docs-index`) — **stays public**, only gained a private endpoint alongside (needed so `scripts/build_search_index.py` can still run from a normal dev machine)
-- `foundryiqv2pau4stor` — Storage (`aw-docs` container) — public-network access was already governance-locked to `Disabled` in this tenant before this project started; gained a private endpoint too
-- `acrfoundryiqv2pau4` — ACR (Premium) — **stays public** (needed for `az acr build`, since the jumpbox has no Docker), gained a private endpoint alongside
-- `foundryiqv25hdbcosmos` — Cosmos DB for NoSQL (new; required by Foundry's standard agent setup, didn't exist before) — private endpoint only
-- `law-foundryiqv2-*` — Log Analytics workspace (for Application Insights / agent tracing)
-- `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — see below
+- `foundryiqv2pau4search` — AI Search (semantic search, index `aw-docs-index`) — stays public, private endpoint added alongside
+- `foundryiqv2pau4stor` — Storage (`aw-docs` container) — public network access locked `Disabled` by tenant policy; private endpoint added
+- `acrfoundryiqv2pau4` — ACR (Premium) — stays public (used by `az acr build`), private endpoint added alongside
+- `foundryiqv25hdbcosmos` — Cosmos DB for NoSQL (required by Foundry's standard agent setup) — private endpoint only
+- `law-foundryiqv2-*` — Log Analytics workspace (Application Insights / agent tracing)
+- `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — shell access via `az container exec`, no VM/Bastion
 - `foundryiq-orchestrator-bot` — Bot Service (`publicNetworkAccess: Enabled`), MS Teams channel, fronting `orchestrator-agent` — see "Bot Service / Teams" below
 - `foundryiqv2fabric` — Fabric capacity (F64), under Bicep (`infra/06-fabric-capacity.bicep`); must be **Active** (not Paused) for the Fabric tool to work — see "Fabric capacity & artifacts" below
 
-## Why the jumpbox is a container, not a VM
+## Repo layout
 
-This subscription has zero available VM SKUs in UK South (`az vm list-skus` returns no
-unrestricted sizes at all) — the same compute restriction hit earlier in this project,
-where Azure Container Instances was the one working option. So the jumpbox is an ACI
-container instead of the reference architecture's VM + Bastion: `az container exec`
-gives shell access directly, no Bastion needed.
-
-Real consequence: **the jumpbox has no Docker** (no Docker-in-Docker in standard ACI),
-so the usual `azd deploy` build+push+register flow doesn't work from inside the VNet.
-See "Deploying agent updates" below for the actual two-step process this project uses
-instead.
+- `agents/` — `kb-agent/`, `courier-agent/`, `orchestrator-agent/` (see "Agents" below)
+- `infra/` — numbered Bicep files, one per deployment step (see "Infra" below)
+- `scripts/` — deployment/operational scripts (shell + `build_search_index.py`)
+- `data/aw-docs/` — the 3 source PDFs the knowledge base is built from (see "Knowledge base" below)
+- `.env.example` — copy to `.env` and fill in (see "Configuration" above)
 
 ## Agents (`agents/`)
 
@@ -142,13 +140,8 @@ instead.
   via the `fabric-iq-toolbox` toolbox (OBO-enabled — see the toolbox's own
   `UserEntraToken` connection, `fabric-dataagent-obo`)
 
-None of these agents' Python code changed for the migration to private — only how
-they're built and registered changed (see below).
-
-A SharePoint-grounded agent was explored earlier (Work IQ, direct Graph API, the native
-Foundry SharePoint tool, a Copilot Studio agent via the Direct-to-Engine API) but
-dropped — every path hit either a tenant admin-consent wall or an undocumented/broken
-backend connection lookup. Not part of this build.
+`kb_agent`/`courier_agent` are wired into the orchestrator in-process
+(`agent_framework.Agent.as_tool()`), not via Foundry-to-Foundry A2A.
 
 ## Infra (`infra/`)
 
@@ -162,16 +155,104 @@ completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only ne
 - `05-bot-service.bicep` — Bot Service + Teams channel, fronting the private `orchestrator-agent` (see "Bot Service / Teams" below)
 - `06-fabric-capacity.bicep` — the Fabric capacity (see "Fabric capacity & artifacts" below)
 
-## Setup sequence (fresh environment)
+## Step-by-step setup (fresh environment)
 
-1. `az deployment group create -g rg-foundryiq-v2 -f infra/01-network.bicep`
-2. `az deployment group create -g rg-foundryiq-v2 -f infra/02-data-services.bicep --parameters searchName=<name> storageName=<name> acrName=<name> vnetName=foundryiqv2-vnet peSubnetName=pe-subnet`
-3. `az deployment group create -g rg-foundryiq-v2 -f infra/03-foundry-account.bicep --parameters agentSubnetId=<id> peSubnetId=<id> searchName=<name> storageName=<name> cosmosName=<name>`
-4. `az deployment group create -g rg-foundryiq-v2 -f infra/04-jumpbox.bicep --parameters vnetName=foundryiqv2-vnet`
-5. Upload PDFs and build the search index: `python scripts/build_search_index.py` (runs from a normal dev machine — Search stayed public)
-6. From inside the jumpbox (`az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox --exec-command "az login --use-device-code"`, complete the device-code prompt): `scripts/create_fabric_toolbox.sh <fabric-workspace-id> <fabric-data-agent-id>`
-7. Build + register each agent (see below)
-8. Publish `orchestrator-agent` to Teams (see "Bot Service / Teams" below)
+1. **Clone and configure.**
+   ```sh
+   git clone https://github.com/pranabpaul-tech/foundry-iq-v2.git
+   cd foundry-iq-v2
+   cp .env.example .env
+   ```
+   Fill in `SUBSCRIPTION_ID`/`RESOURCE_GROUP` now; the rest get filled in as you go.
+
+2. **Deploy the network.**
+   ```sh
+   az deployment group create -g rg-foundryiq-v2 -f infra/01-network.bicep
+   ```
+
+3. **Add private endpoints to your existing Search/Storage/ACR + deploy Cosmos DB.**
+   ```sh
+   az deployment group create -g rg-foundryiq-v2 -f infra/02-data-services.bicep \
+     --parameters searchName=<name> storageName=<name> acrName=<name> \
+                  vnetName=foundryiqv2-vnet peSubnetName=pe-subnet
+   ```
+
+4. **Deploy the Foundry account + project.** The capability-host step normally takes
+   30–35 minutes — that's expected, not a hang.
+   ```sh
+   az deployment group create -g rg-foundryiq-v2 -f infra/03-foundry-account.bicep \
+     --parameters agentSubnetId=<id> peSubnetId=<id> \
+                  searchName=<name> storageName=<name> cosmosName=<name>
+   ```
+   Then fill `.env`'s `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_SEARCH_ENDPOINT`, and
+   `AZURE_OPENAI_ENDPOINT` from:
+   ```sh
+   az cognitiveservices account show -g rg-foundryiq-v2 -n <account-name> --query properties.endpoints
+   ```
+
+5. **Deploy the jumpbox** (used for every data-plane call the private project endpoint
+   requires — registering agents, granting RBAC, the Fabric/Teams REST calls below).
+   ```sh
+   az deployment group create -g rg-foundryiq-v2 -f infra/04-jumpbox.bicep --parameters vnetName=foundryiqv2-vnet
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "az login --use-device-code"
+   ```
+   Complete the device-code prompt. Every later "from inside the jumpbox" step reuses
+   this same `az container exec ... --exec-command "<command>"` pattern.
+
+6. **Build the knowledge base** (from a normal dev machine — Search stayed public).
+   See "Knowledge base: PDFs, chunking, and embedding" below for what this does.
+   ```sh
+   pip install -r scripts/requirements.txt
+   az login
+   python scripts/build_search_index.py
+   ```
+
+7. **Provision (or point at) a Fabric workspace + Data Agent.** If you don't already
+   have one, see "Fabric capacity & artifacts" below for `provision_fabric_workspace.sh`.
+   Then, from inside the jumpbox, create the toolbox connection:
+   ```sh
+   scripts/create_fabric_toolbox.sh <fabric-workspace-id> <fabric-data-agent-id>
+   ```
+
+8. **Build, push, and register each agent** (`kb-agent`, `courier-agent`,
+   `orchestrator-agent`) — see "Deploying agent updates" below for the exact two-step
+   command sequence and the RBAC each agent identity needs. Run it once per agent.
+
+9. **(Optional) Publish `orchestrator-agent` to Microsoft Teams** — see "Bot Service /
+   Teams" below.
+
+10. **Verify** — see "Verification" below.
+
+## Knowledge base: PDFs, chunking, and embedding
+
+Source PDFs live in `data/aw-docs/` (checked into this repo, 3 files). Add, remove, or
+replace PDFs there to change what `kb-agent`/`orchestrator-agent` can answer from — no
+code changes needed, `scripts/build_search_index.py` picks up every `*.pdf` in that
+directory automatically.
+
+```sh
+pip install -r scripts/requirements.txt
+az login
+python scripts/build_search_index.py
+```
+
+What it does, in order:
+
+1. Extracts text from every PDF in `data/aw-docs/` (`pypdf`).
+2. Splits each document's text into chunks — `CHUNK_SIZE_CHARS = 2000` characters with
+   `CHUNK_OVERLAP_CHARS = 200` overlap, both set as constants near the top of
+   `scripts/build_search_index.py`; edit them there to change chunk size.
+3. Embeds each chunk with the `AZURE_EMBEDDING_MODEL_DEPLOYMENT_NAME` deployment
+   (`text-embedding-3-large` by default) and uploads into the `AZURE_SEARCH_INDEX_NAME`
+   Azure AI Search index (`aw-docs-index` by default).
+4. Wraps that index in an `AZURE_SEARCH_KNOWLEDGE_SOURCE_NAME` Knowledge Source and an
+   `AZURE_SEARCH_KNOWLEDGE_BASE_NAME` Knowledge Base — the actual thing
+   `kb-agent`/`orchestrator-agent` query at runtime.
+
+Safe to re-run after editing the PDFs: each chunk's document ID is a deterministic hash
+of `(filename, chunk index)`, so re-running overwrites existing chunks in place instead
+of duplicating them.
 
 ## Deploying agent updates
 
@@ -193,11 +274,9 @@ Two steps instead:
 
 ## Bot Service / Teams
 
-`orchestrator-agent` is also reachable from Microsoft Teams, via Azure Bot Service --
-kept publicly accessible (per the ask that started this piece: "keep it publicly
-accessible but connected to Foundry orchestrator agent over private endpoint"), wired
-to the private agent through Foundry's own native publishing mechanism, not a custom
-relay.
+`orchestrator-agent` is also reachable from Microsoft Teams, via Azure Bot Service —
+kept publicly accessible, wired to the private agent through Foundry's own native
+publishing mechanism.
 
 **How it works:** Foundry exposes a service-managed, source-IP-filtered public
 exception for the agent's Activity Protocol route only (Bot Service and Microsoft 365
@@ -206,24 +285,11 @@ stays fully private. The Bot Service resource's `endpoint` points directly at th
 exception URL, which Microsoft's Bot Service/Teams infrastructure reaches without ever
 touching our VNet.
 
-**Why Teams, not Direct Line:** tested directly. A raw/anonymous Direct Line caller
-can't satisfy either Bot Service authorization scheme (`BotServiceRbac` needs Azure
-RBAC on the Foundry project; `BotServiceTenant` needs the caller to be a signed-in
-tenant member) -- Direct Line's classic secret-based flow never carries a real
-per-caller Entra token through to Foundry. Teams does, since every Teams message
-already carries the sender's own signed-in token. This repo uses `BotServiceTenant`:
-any signed-in member of this tenant can use the bot via Teams. Not anonymous-public --
-the broadest this native mechanism supports. Genuinely anonymous public access would
-need a different architecture (APIM/relay inside the VNet, translating Bot Framework
-Activity protocol to the Responses API) -- deliberately not what this repo builds,
-since the native mechanism above is far simpler and meets the actual requirement.
-
-**Why `publicNetworkAccess: Enabled` on the Bot Service resource itself**, unlike
-Microsoft's own reference example (which sets it `Disabled` for a fully locked-down
-scenario): tested directly, `Disabled` also blocks Direct Line's/Teams' own
-client-facing API (`NetworkDenied`), not just inbound Foundry traffic. The private half
-of this design is entirely on the Foundry side (the source-IP-filtered exception); this
-resource is meant to be reachable.
+Channel is Microsoft Teams (auth scheme `BotServiceTenant`: any signed-in tenant
+member can use the bot via Teams) — not Direct Line, since a raw/anonymous Direct Line
+caller can't satisfy either Bot Service authorization scheme (`BotServiceRbac`/
+`BotServiceTenant` both need a real per-caller Entra token, which only Teams carries
+through to Foundry).
 
 **Setup, from inside the jumpbox:**
 ```sh
@@ -240,44 +306,20 @@ Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.micro
 
 ## Fabric capacity & artifacts
 
-The Fabric capacity now lives in this resource group as `foundryiqv2fabric` (F64),
-under Bicep (`infra/06-fabric-capacity.bicep`). It replaces `fabric3iq`, which was
-created manually in a separate resource group (`rg-3iqdemo`) before this project
-started.
+The Fabric capacity lives in this resource group as `foundryiqv2fabric` (F64), under
+Bicep (`infra/06-fabric-capacity.bicep`).
 
-**Why it's a new capacity, not the original one moved:** a direct ARM resource-group
-move of `fabric3iq` was attempted first and failed with
-`ResourceMoveTimedOut: Move resources for provider 'Microsoft.Fabric' did not finish
-within allowed time '00:15:00'` -- confirmed as a known limitation (Microsoft's own
-guidance for cross-group Fabric moves is to provision a new capacity in the target
-group and reassign workspaces to it, not rely on ARM move), not a one-off failure worth
-retrying. So that's what happened instead: `foundryiqv2fabric` deployed here via Bicep,
-the one workspace that was on `fabric3iq` (`awworkspace`) reassigned to it via the
-Fabric REST API (`POST /v1/workspaces/{id}/assignToCapacity` -- a workspace's ID, and
-everything in it, is unaffected by which capacity backs it), then `fabric3iq` deleted
-once confirmed empty. `scripts/create_fabric_toolbox.sh` needed no changes -- it points
-at the workspace/Data Agent by their own IDs, not the capacity.
+`Microsoft.Fabric/capacities` is a real ARM resource type — the capacity itself is
+fully Bicep-managed. Everything *inside* Fabric — workspaces, and every item type in
+them (Lakehouse, Data Agent, Ontology, notebooks, etc.) — has **no ARM resource type at
+all**; those are reachable only through the Fabric REST API
+(`api.fabric.microsoft.com`), the same way `scripts/create_fabric_toolbox.sh` talks to
+Fabric for the OBO connection. `scripts/provision_fabric_workspace.sh` is the
+script-based equivalent for those — idempotent find-or-create for a workspace
+(assigned to this capacity) plus Lakehouse, Ontology, and Data Agent item shells in it.
 
-Region stayed **West US**, matching the original: Fabric workspaces are region-pinned
-to whatever capacity they're assigned to at creation, so reassigning across regions
-risks a data-residency change, not just a compute move -- this resource group already
-spans regions (UK South for most resources, West US for Fabric, `global` for DNS
-zones), which is normal for Azure resource groups.
-
-**How much of Fabric Bicep actually reaches:** `Microsoft.Fabric/capacities` is a real
-ARM resource type (stable API `2023-11-01`) — the capacity itself is fully
-Bicep-managed. Everything *inside* Fabric — workspaces, and every item type in them
-(Lakehouse, Data Agent, Ontology, notebooks, etc.) — has **no ARM resource type at
-all**. Those live entirely in the Fabric control plane, reachable only through the
-Fabric REST API (`api.fabric.microsoft.com`) — the same way `scripts/create_fabric_toolbox.sh`
-already talks to Fabric for the OBO connection. So there's no Bicep for
-workspaces/items; `scripts/provision_fabric_workspace.sh` is the script-based
-equivalent — idempotent find-or-create for a workspace (assigned to this capacity) plus
-Lakehouse, Ontology, and Data Agent item shells in it.
-
-**Note on capacity state:** `state` (Active/Paused) is a read-only ARM property —
-Bicep/PUT can't set it, only a dedicated resume/suspend action can.
-`scripts/set_fabric_capacity_state.sh resume|suspend` does that.
+`state` (Active/Paused) is a read-only ARM property — Bicep/PUT can't set it, only a
+dedicated resume/suspend action can: `scripts/set_fabric_capacity_state.sh resume|suspend`.
 
 ```sh
 scripts/set_fabric_capacity_state.sh resume            # capacity must be Active first
@@ -285,16 +327,10 @@ scripts/provision_fabric_workspace.sh foundryiq-workspace foundryiqv2fabric
 ```
 
 Items created this way are empty shells — a Lakehouse with no tables, an Ontology with
-no schema, a Data Agent with no configured data source. Configuring them (loading
-tables, defining the ontology schema, wiring the Data Agent's data source +
-instructions) is a Fabric-portal/Fabric-SDK task that doesn't reduce to a single REST
-POST — do that once, then point `scripts/create_fabric_toolbox.sh` at the resulting
-workspace ID and Data Agent ID as before.
-
-This is additive: `provision_fabric_workspace.sh` creates a new workspace by default
-(`foundryiq-workspace`), separate from whatever workspace already backs the
-orchestrator's live Fabric toolbox — pass that workspace's own display name as the
-first argument to target it instead.
+no schema, a Data Agent with no configured data source. Configure them (load tables,
+define the ontology schema, wire the Data Agent's data source + instructions) from the
+Fabric portal, then point `scripts/create_fabric_toolbox.sh` at the resulting workspace
+ID and Data Agent ID (step 7 in "Step-by-step setup" above).
 
 ## Verification
 
