@@ -10,31 +10,78 @@ built on) for the full phased plan and decisions.
 
 ## Architecture
 
-```
-                          Internet (blocked)
-                                 x
-┌──────────────────────────── VNet: foundryiqv2-vnet ─────────────────────────────┐
-│                                                                                   │
-│  ┌─────────────────┐   ┌──────────────────────┐   ┌───────────────────────────┐  │
-│  │  agent-subnet     │   │  pe-subnet             │   │  jumpbox-subnet             │  │
-│  │  (delegated to    │   │  private endpoints:     │   │  ci-foundryiq-jump (ACI)   │  │
-│  │  Microsoft.App/   │   │  Foundry account,       │   │  -- shell access via        │  │
-│  │  environments)    │   │  Search, Storage,        │   │  `az container exec`,       │  │
-│  │                   │   │  ACR, Cosmos DB          │   │  no VM/Bastion needed        │  │
-│  │  Foundry account   │   └──────────────────────┘   └───────────────────────────┘  │
-│  │  (network-injected,                                                              │
-│  │   publicNetworkAccess: Disabled) ──── orchestrator-agent ──┬── kb_agent (in-proc) │
-│  │   kb-agent, courier-agent,                                 ├── courier_agent (in-proc)│
-│  │   orchestrator-agent (hosted)                              └── FoundryToolbox ────┼──▶ Fabric
-│  └─────────────────┘                                                                │  (private
-│                                                                                       │   link)
-│  mcp-subnet (reserved, unused -- no self-hosted MCP/OpenAPI/Function/A2A servers)     │
-└───────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph internet["Internet"]
+        teamsUser["Teams user<br/>(tenant member)"]
+        devMachine["Normal dev machine<br/>(build_search_index.py,<br/>build_and_push_agent.sh)"]
+    end
+
+    subgraph azure["Azure -- rg-foundryiq-v2 (UK South)"]
+        botService["Bot Service<br/>foundryiq-orchestrator-bot<br/>publicNetworkAccess: Enabled<br/>MsTeamsChannel, auth: BotServiceTenant"]
+
+        subgraph vnet["VNet: foundryiqv2-vnet"]
+            subgraph agentSubnet["agent-subnet<br/>(delegated: Microsoft.App/environments)"]
+                foundry["Foundry account foundryiqv2p3ygk<br/>publicNetworkAccess: Disabled<br/>+ service-managed public exception<br/>for Activity Protocol only"]
+                orchestrator["orchestrator-agent (hosted)"]
+                kbInproc["kb_agent (in-process tool)"]
+                courierInproc["courier_agent (in-process tool)"]
+                toolbox["FoundryToolbox"]
+                foundry --- orchestrator
+                orchestrator --> kbInproc
+                orchestrator --> courierInproc
+                orchestrator --> toolbox
+            end
+
+            subgraph peSubnet["pe-subnet -- private endpoints"]
+                peFoundry["Foundry PE"]
+                peSearch["Search PE"]
+                peStorage["Storage PE"]
+                peAcr["ACR PE"]
+                peCosmos["Cosmos DB PE"]
+            end
+
+            subgraph jumpboxSubnet["jumpbox-subnet"]
+                jumpbox["ci-foundryiq-jump (ACI)<br/>az container exec shell access"]
+            end
+
+            mcpSubnet["mcp-subnet (reserved, unused)"]
+        end
+
+        search["AI Search foundryiqv2pau4search<br/>aw-docs-index -- stays public"]
+        storage["Storage foundryiqv2pau4stor<br/>aw-docs container"]
+        acr["ACR acrfoundryiqv2pau4 -- stays public"]
+        cosmos["Cosmos DB foundryiqv25hdbcosmos"]
+        fabric["Fabric capacity fabric3iq<br/>(rg-3iqdemo, external)"]
+    end
+
+    teamsUser -- "Teams message" --> botService
+    botService -- "Activity Protocol<br/>(source-IP-filtered exception)" --> foundry
+    devMachine -. "build/push image (public)" .-> acr
+    devMachine -. "index docs (public)" .-> search
+
+    peFoundry -.-> foundry
+    peSearch -.-> search
+    peStorage -.-> storage
+    peAcr -.-> acr
+    peCosmos -.-> cosmos
+
+    kbInproc --> peSearch
+    toolbox -- "private link" --> fabric
+    jumpbox -. "az login, data-plane calls" .-> foundry
 ```
 
 `kb-agent` and `courier-agent` are also independently registered as their own hosted
 agent versions in the same project — reachable directly (from inside the VNet), no
 orchestrator required.
+
+Bot Service is the one deliberately public-facing piece: `publicNetworkAccess: Enabled`
+on the Bot Service resource itself, talking to the private Foundry account only through
+a service-managed, source-IP-filtered public exception that Foundry exposes for the
+Activity Protocol route alone (Bot Service/Microsoft 365 source ranges only —
+everything else on the project, Responses API and agent management, stays fully
+private). See "Bot Service / Teams" below for the full design rationale and the
+auth-scheme trade-offs that shaped it.
 
 ## Three hard-won findings that shaped this design
 
@@ -71,6 +118,7 @@ working end-to-end.
 - `foundryiqv25hdbcosmos` — Cosmos DB for NoSQL (new; required by Foundry's standard agent setup, didn't exist before) — private endpoint only
 - `law-foundryiqv2-*` — Log Analytics workspace (for Application Insights / agent tracing)
 - `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — see below
+- `foundryiq-orchestrator-bot` — Bot Service (`publicNetworkAccess: Enabled`), MS Teams channel, fronting `orchestrator-agent` — see "Bot Service / Teams" below
 - Fabric capacity `fabric3iq` (`rg-3iqdemo`) — external to this resource group; must be **Active** (not Paused) for the Fabric tool to work
 
 ## Why the jumpbox is a container, not a VM
@@ -111,6 +159,7 @@ completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only ne
 - `02-data-services.bicep` — private endpoints for the *existing* Search/Storage/ACR (no recreation) + new Cosmos DB + Log Analytics
 - `03-foundry-account.bicep` — the network-injected Foundry account + project + model deployments + capability host + RBAC + connections (Cosmos/Storage/Search/ACR)
 - `04-jumpbox.bicep` — the ACI jumpbox + its subnet
+- `05-bot-service.bicep` — Bot Service + Teams channel, fronting the private `orchestrator-agent` (see "Bot Service / Teams" below)
 
 ## Setup sequence (fresh environment)
 
@@ -121,6 +170,7 @@ completion beyond both needing the VNet, `03` needs both, `04` (jumpbox) only ne
 5. Upload PDFs and build the search index: `python scripts/build_search_index.py` (runs from a normal dev machine — Search stayed public)
 6. From inside the jumpbox (`az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox --exec-command "az login --use-device-code"`, complete the device-code prompt): `scripts/create_fabric_toolbox.sh <fabric-workspace-id> <fabric-data-agent-id>`
 7. Build + register each agent (see below)
+8. Publish `orchestrator-agent` to Teams (see "Bot Service / Teams" below)
 
 ## Deploying agent updates
 
@@ -139,6 +189,53 @@ Two steps instead:
    `orchestrator-agent`, `Foundry User` on the project for `orchestrator-agent`
    (needed to read the Fabric toolbox connection). None for `courier-agent`.
 4. Test: `scripts/invoke_hosted_agent.sh kb-agent "What is Adventure Works' refund policy?"` (from inside the jumpbox)
+
+## Bot Service / Teams
+
+`orchestrator-agent` is also reachable from Microsoft Teams, via Azure Bot Service --
+kept publicly accessible (per the ask that started this piece: "keep it publicly
+accessible but connected to Foundry orchestrator agent over private endpoint"), wired
+to the private agent through Foundry's own native publishing mechanism, not a custom
+relay.
+
+**How it works:** Foundry exposes a service-managed, source-IP-filtered public
+exception for the agent's Activity Protocol route only (Bot Service and Microsoft 365
+source ranges) -- everything else on the project (Responses API, agent management)
+stays fully private. The Bot Service resource's `endpoint` points directly at that
+exception URL, which Microsoft's Bot Service/Teams infrastructure reaches without ever
+touching our VNet.
+
+**Why Teams, not Direct Line:** tested directly. A raw/anonymous Direct Line caller
+can't satisfy either Bot Service authorization scheme (`BotServiceRbac` needs Azure
+RBAC on the Foundry project; `BotServiceTenant` needs the caller to be a signed-in
+tenant member) -- Direct Line's classic secret-based flow never carries a real
+per-caller Entra token through to Foundry. Teams does, since every Teams message
+already carries the sender's own signed-in token. This repo uses `BotServiceTenant`:
+any signed-in member of this tenant can use the bot via Teams. Not anonymous-public --
+the broadest this native mechanism supports. Genuinely anonymous public access would
+need a different architecture (APIM/relay inside the VNet, translating Bot Framework
+Activity protocol to the Responses API) -- deliberately not what this repo builds,
+since the native mechanism above is far simpler and meets the actual requirement.
+
+**Why `publicNetworkAccess: Enabled` on the Bot Service resource itself**, unlike
+Microsoft's own reference example (which sets it `Disabled` for a fully locked-down
+scenario): tested directly, `Disabled` also blocks Direct Line's/Teams' own
+client-facing API (`NetworkDenied`), not just inbound Foundry traffic. The private half
+of this design is entirely on the Foundry side (the source-IP-filtered exception); this
+resource is meant to be reachable.
+
+**Setup, from inside the jumpbox:**
+```sh
+scripts/enable_agent_teams_endpoint.sh orchestrator-agent BotServiceTenant
+# then deploy infra/05-bot-service.bicep with msaAppId = the agent's
+# instance_identity.client_id (printed by the script above), then:
+scripts/publish_agent_to_teams.sh orchestrator-agent
+```
+The publish step (Microsoft 365 app publish) is required -- without it, a Teams deep
+link built from the raw agent identity App ID resolves to nothing ("couldn't find the
+bot"), even with the Bot Service resource and Foundry endpoint correctly wired up.
+
+Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/publish-copilot-virtual-network).
 
 ## Verification
 
