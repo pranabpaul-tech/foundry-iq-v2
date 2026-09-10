@@ -348,6 +348,14 @@ Then deploy `infra/05-bot-service.bicep` with `msaAppId` = the agent's
 az deployment group create -g rg-foundryiq-v2 -f infra/05-bot-service.bicep \
   --parameters msaAppId=<client-id> tenantId=<tenant-id>
 ```
+The agent version being published needs a non-empty `description` --
+`register_hosted_agent.sh`'s optional third argument sets one (repeat the same
+environment-variables JSON the version was already registered with, from its
+`definition.environment_variables`). A description contains spaces, which
+`--exec-command` can't pass through (no shell, no quoting -- see the note at the top
+of `scripts/register_hosted_agent.sh`); either use hyphens in place of spaces, or run
+the script from a real interactive shell in the container instead of `--exec-command`.
+
 Then, back on the jumpbox, publish to Teams:
 ```sh
 az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
@@ -358,6 +366,11 @@ az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpb
 The publish step (Microsoft 365 app publish) is required -- without it, a Teams deep
 link built from the raw agent identity App ID resolves to nothing ("couldn't find the
 bot"), even with the Bot Service resource and Foundry endpoint correctly wired up.
+Beyond `publishScope`, the underlying API also requires `shortDescription`,
+`fullDescription`, `developerName`, `developerWebsiteUrl`, `privacyUrl`, and
+`termsOfUseUrl` -- `publish_agent_to_teams.sh` fills these with sensible defaults for
+this project (all overridable via env vars); if you invoke the API directly instead,
+you'll need to supply them yourself, one field's validation error at a time otherwise.
 
 Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/publish-copilot-virtual-network).
 

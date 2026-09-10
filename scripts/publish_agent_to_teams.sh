@@ -18,6 +18,13 @@
 # respected); use hyphens in that case. Running this script as a file does
 # not have that problem.
 #
+# The Teams app manifest requires several fields beyond publishScope --
+# discovered by trial (the API rejects the request one missing field at a
+# time): shortDescription, fullDescription, developerName,
+# developerWebsiteUrl, privacyUrl, termsOfUseUrl. All overridable via env
+# vars; defaults below describe this project's own Adventure Works
+# assistant.
+#
 # Usage: ./publish_agent_to_teams.sh <agent-name> [publishScope]
 #   e.g. ./publish_agent_to_teams.sh orchestrator-agent Shared
 
@@ -27,11 +34,17 @@ AGENT_NAME="${1:?Usage: publish_agent_to_teams.sh <agent-name> [publishScope]}"
 PUBLISH_SCOPE="${2:-Shared}"
 
 PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
+SHORT_DESCRIPTION="${SHORT_DESCRIPTION:-Adventure Works multi-agent assistant}"
+FULL_DESCRIPTION="${FULL_DESCRIPTION:-Adventure Works multi-agent assistant for support, shipping, and sales questions}"
+DEVELOPER_NAME="${DEVELOPER_NAME:-Adventure Works}"
+DEVELOPER_WEBSITE_URL="${DEVELOPER_WEBSITE_URL:-https://www.adventure-works.com}"
+PRIVACY_URL="${PRIVACY_URL:-https://www.adventure-works.com/privacy}"
+TERMS_URL="${TERMS_URL:-https://www.adventure-works.com/terms}"
 
 RESPONSE=$(az rest --method post \
   --url "${PROJECT_ENDPOINT}/agents/${AGENT_NAME}/microsoft365/publish?api-version=v1" \
   --resource https://ai.azure.com \
-  --body "{\"publishScope\":\"${PUBLISH_SCOPE}\"}")
+  --body "{\"publishScope\":\"${PUBLISH_SCOPE}\",\"shortDescription\":\"${SHORT_DESCRIPTION}\",\"fullDescription\":\"${FULL_DESCRIPTION}\",\"developerName\":\"${DEVELOPER_NAME}\",\"developerWebsiteUrl\":\"${DEVELOPER_WEBSITE_URL}\",\"privacyUrl\":\"${PRIVACY_URL}\",\"termsOfUseUrl\":\"${TERMS_URL}\"}")
 
 echo "$RESPONSE"
 
