@@ -176,23 +176,37 @@ def main():
 
     print("==> Configuring Data Agent definition")
     ds_key = f"lakehouse-{LAKEHOUSE_NAME}"
+    # Lakehouse tables live under the default "dbo" schema (same convention as
+    # the Warehouse example in the definition docs) -- a flat table-level
+    # elements list (no schema wrapper) validates and publishes fine but
+    # makes the Data Agent's query planner fail at runtime ("The Data Agent
+    # run failed before producing a result"), confirmed by calling the MCP
+    # tool directly. Nesting under a lakehouse_tables.schema element fixes it.
     elements = [
         {
-            "id": f"00000000-0000-0000-0000-{i:012d}",
+            "id": "00000000-0000-0000-0000-000000000000",
             "is_selected": True,
-            "display_name": table_name,
-            "type": "lakehouse_tables.table",
+            "display_name": "dbo",
+            "type": "lakehouse_tables.schema",
             "children": [
                 {
-                    "id": f"00000000-0000-0000-0000-{i:06d}{j:06d}",
+                    "id": f"00000000-0000-0000-0000-{i:012d}",
                     "is_selected": True,
-                    "display_name": col,
-                    "type": "lakehouse_tables.column",
+                    "display_name": table_name,
+                    "type": "lakehouse_tables.table",
+                    "children": [
+                        {
+                            "id": f"00000000-0000-0000-0000-{i:06d}{j:06d}",
+                            "is_selected": True,
+                            "display_name": col,
+                            "type": "lakehouse_tables.column",
+                        }
+                        for j, col in enumerate(columns)
+                    ],
                 }
-                for j, col in enumerate(columns)
+                for i, (table_name, columns) in enumerate(tables, start=1)
             ],
         }
-        for i, (table_name, columns) in enumerate(tables, start=1)
     ]
 
     ai_instructions = (
