@@ -234,7 +234,7 @@ def main():
     ]
 
     fabric_call_lro(
-        "POST", f"/workspaces/{workspace_id}/dataAgents/{data_agent_id}/updateDefinition?updateMetadata=True",
+        "POST", f"/workspaces/{workspace_id}/dataAgents/{data_agent_id}/updateDefinition",
         fabric_token, json_body={"definition": {"parts": definition_parts}},
     )
 
