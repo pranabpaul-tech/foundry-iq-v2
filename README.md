@@ -141,6 +141,7 @@ script's own hardcoded defaults if your resource names match this project's.
 - `scripts/` — operational scripts (shell + `build_search_index.py`); `jumpbox_setup.sh`
   is the one that runs from inside the jumpbox (see "Step-by-step setup" below)
 - `data/aw-docs/` — the 3 source PDFs the knowledge base is built from (see "Knowledge base" below)
+- `data/aw-sales/` — the sample AdventureWorks sales dataset the Fabric Data Agent is built from (see "Fabric capacity & artifacts" below)
 - `.env.example` — copy to `.env` and fill in (see "Configuration" above)
 
 ## Agents (`agents/`)
@@ -210,6 +211,20 @@ see "Bot Service / Teams" below.
    to). The Foundry account's capability-host step normally takes 30–35 minutes —
    that's expected, not a hang.
 
+   **Known gotcha — soft-deleted account name collision.** The Foundry account's name is
+   deterministic (`uniqueString(resourceGroup().id, 'phase3')` in
+   `infra/03-foundry-account.bicep`), so a prior deployment into the same resource group
+   that was torn down can leave an orphaned soft-deleted resource (both the Cognitive
+   Services account itself and a paired backing Azure ML workspace) that collides with
+   the name a fresh `azd provision` tries to reuse -- the error is `A soft-deleted
+   resource is causing a deployment conflict` or `Soft-deleted workspace exists`.
+   `az cognitiveservices account purge` and `azd down --purge` both looked like the
+   right fix but neither reliably clears the paired AML workspace in practice; the
+   dependable fix is changing the salt string (`'phase3'` -> anything else) so Bicep
+   derives a fresh, non-colliding name and moves on -- no teardown needed. Update this
+   README's resource name references (and any hardcoded defaults in `scripts/*.sh`) to
+   match afterward.
+
    `infra/hooks/postprovision.sh` then runs automatically:
    - Writes `.env` from the deployment's outputs (`azd env get-values > .env`) — no
      manual endpoint copy-pasting.
@@ -244,9 +259,19 @@ see "Bot Service / Teams" below.
    installs its own Python, builds the knowledge base (see "Knowledge base" below),
    and registers + RBAC-grants all three agents.
 
-5. **Create the Fabric toolbox connection**, from inside the jumpbox, once you have a
-   configured Fabric Data Agent (see "Fabric capacity & artifacts" below if you're
-   starting from scratch):
+5. **Configure the Fabric Data Agent with real data, then create the toolbox
+   connection**, from inside the jumpbox (see "Fabric capacity & artifacts" below for
+   what this actually does):
+   ```sh
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/provision_fabric_sales_agent.py -o /tmp/provision_fabric_sales_agent.py"
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/data/aw-sales/adventureworks_sample.zip -o /tmp/adventureworks_sample.zip"
+   az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
+     --exec-command "env AW_SALES_ZIP=/tmp/adventureworks_sample.zip python3 /tmp/provision_fabric_sales_agent.py"
+   ```
+   Prints the workspace ID and Data Agent ID at the end -- pass them to
+   `create_fabric_toolbox.sh`:
    ```sh
    az container exec -g rg-foundryiq-v2 -n ci-foundryiq-jump --container-name jumpbox \
      --exec-command "curl -sL https://raw.githubusercontent.com/pranabpaul-tech/foundry-iq-v2/main/scripts/create_fabric_toolbox.sh -o /tmp/create_fabric_toolbox.sh"
@@ -387,7 +412,9 @@ all**; those are reachable only through the Fabric REST API
 (`api.fabric.microsoft.com`), the same way `scripts/create_fabric_toolbox.sh` talks to
 Fabric for the OBO connection. `scripts/provision_fabric_workspace.sh` is the
 script-based equivalent for those — idempotent find-or-create for a workspace
-(assigned to this capacity) plus Lakehouse, Ontology, and Data Agent item shells in it.
+(assigned to this capacity) plus Lakehouse and Data Agent item shells in it (and an
+Ontology shell too, *if* that item type is enabled in your tenant — see the callout
+below).
 
 `state` (Active/Paused) is a read-only ARM property — Bicep/PUT can't set it, only a
 dedicated resume/suspend action can: `scripts/set_fabric_capacity_state.sh resume|suspend`.
@@ -401,11 +428,52 @@ scripts/set_fabric_capacity_state.sh resume     # before using the Fabric tool a
 scripts/provision_fabric_workspace.sh foundryiq-workspace foundryiqv2fabric
 ```
 
-Items created this way are empty shells — a Lakehouse with no tables, an Ontology with
-no schema, a Data Agent with no configured data source. Configure them (load tables,
-define the ontology schema, wire the Data Agent's data source + instructions) from the
-Fabric portal, then point `scripts/create_fabric_toolbox.sh` at the resulting workspace
-ID and Data Agent ID (step 5 in "Step-by-step setup" above).
+The Lakehouse and Data Agent items `provision_fabric_workspace.sh` creates start as
+empty shells — a Lakehouse with no tables, a Data Agent with no configured data source.
+`scripts/provision_fabric_sales_agent.py` (step 5 in "Step-by-step setup" above) makes
+the Data Agent real, entirely from the CLI — no Fabric portal step needed:
+
+1. Extracts `data/aw-sales/adventureworks_sample.zip`: 8 pre-built Delta tables (real
+   AdventureWorks data — customers, employees, 60,919 order line items, products,
+   categories, subcategories, vendors, vendor-product), each already a Parquet file
+   plus its own `_delta_log`, not raw CSVs needing conversion.
+2. Uploads every file in each table directory, unmodified, to the Lakehouse's
+   `Tables/<name>/` path via the OneLake DFS (ADLS Gen2-compatible) API. Fabric
+   auto-discovers any valid Delta table folder placed directly under `Tables/` — no
+   separate "load table" call needed for a prebuilt table like this (a raw CSV *does*
+   need one — see the script's own comments if you're swapping in different source
+   data that isn't already Delta-formatted).
+3. Builds a Data Agent definition — see [Data Agent item
+   definition](https://learn.microsoft.com/en-us/rest/api/fabric/articles/item-management/definitions/data-agent-definition)
+   for the format — wiring all 8 tables in as a `lakehouse_tables` data source (nested
+   `dbo` schema → table → column `elements`; a flat table-level list with no schema
+   wrapper validates and publishes fine but makes the Data Agent fail at query time),
+   with AI instructions describing the tables' foreign-key relationships and a few
+   join-based few-shot examples, and pushes it via `updateDefinition`.
+4. Publishes the Data Agent, promoting the draft to what Fabric MCP (and so
+   `create_fabric_toolbox.sh`) actually serves.
+
+Idempotent — re-running overwrites the same-named tables and replaces the whole
+definition/publish state. To point it at different source data, replace
+`data/aw-sales/adventureworks_sample.zip` with your own zip of Delta table directories
+(or adapt the script for raw CSVs) and edit its `TABLE_COLUMNS` dict to match.
+
+**If the Data Agent's answers start failing** (`"The Data Agent run failed before
+producing a result"` from the MCP tool, or `"Error: Function failed."` from the
+orchestrator) **even though the definition looks correct**, this preview feature has
+been observed to get into a stuck state that a config *change* doesn't clear but a
+clean removal does: push an `updateDefinition` with no datasource part at all (see the
+script for the two-part minimal definition), publish that empty state, then re-run
+`provision_fabric_sales_agent.py` to re-add it.
+
+**Ontology:** some Fabric tenants/capacities reject `Ontology` item creation outright
+(`Forbidden: FeatureNotAvailable`) — a tenant-level preview-feature gate, not something
+fixable from this repo or via the REST API (checking or changing it needs Fabric
+tenant-admin rights, a `Tenant.Read.All`-scoped call this project's identities don't
+have). If your tenant has it enabled, building entities/relationships over these same
+Lakehouse tables and pointing the Data Agent at the ontology (`type: "graph"` in its
+datasource config) instead of the tables directly is a reasonable variant to try — it
+wasn't possible to validate end-to-end here for exactly that reason.
 
 ## Verification
 
@@ -415,4 +483,12 @@ ID and Data Agent ID (step 5 in "Step-by-step setup" above).
   (`Public access is disabled. Please configure private endpoint.`).
 - Each of the three agents answers correctly when invoked from the jumpbox — confirmed
   end-to-end: kb-agent (KB citation), courier-agent (live web search with citations),
-  orchestrator-agent (routed to the Fabric toolbox, returned real data).
+  orchestrator-agent (routed to the Fabric toolbox, returned real joined data from the
+  AdventureWorks tables — e.g. correct per-category sales totals and the right
+  salesperson by order *count* vs. by total sale value).
+- The Teams-published bot responds in a real Teams client (`teamsAppId` from
+  `publish_agent_to_teams.sh`'s output; deep link
+  `https://teams.microsoft.com/l/app/<teamsAppId>`) — needs a human tenant member
+  signed in, since the `BotServiceTenant` auth scheme requires a real Teams-carried
+  Entra token; there's no Direct Line/Web Chat fallback for this design, so the Azure
+  portal's own "Test in Web Chat" won't work here.
