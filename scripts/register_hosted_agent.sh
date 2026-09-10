@@ -21,14 +21,21 @@
 #      reserved by the platform and rejected if you try to set it yourself
 #      -- it's auto-injected into the container.
 #
-# Usage (from inside the jumpbox): ./register_hosted_agent.sh <agent-name> <env-vars-json>
+# Usage (from inside the jumpbox): ./register_hosted_agent.sh <agent-name> <env-vars-json> [description]
 #   e.g. ./register_hosted_agent.sh kb-agent '{"AZURE_AI_MODEL_DEPLOYMENT_NAME":"gpt-4.1","AZURE_SEARCH_ENDPOINT":"https://foundryiqv2search.search.windows.net","AZURE_SEARCH_KNOWLEDGE_BASE_NAME":"aw-knowledge-base"}'
 #   e.g. ./register_hosted_agent.sh courier-agent '{"AZURE_AI_MODEL_DEPLOYMENT_NAME":"gpt-4.1"}'
+#
+# The optional third argument sets the agent version's description -- required
+# (non-empty) before publish_agent_to_teams.sh will succeed ("ShortDescription
+# is required"), since Teams derives the app manifest's short description from
+# it. Omit it to leave description unset, as every version before Teams
+# publishing did.
 
 set -eu
 
-AGENT_NAME="${1:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json>}"
-ENV_VARS_JSON="${2:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json>}"
+AGENT_NAME="${1:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json> [description]}"
+ENV_VARS_JSON="${2:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json> [description]}"
+DESCRIPTION="${3:-}"
 
 PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
 ACR_LOGIN_SERVER="${ACR_LOGIN_SERVER:-foundryiqv2acr.azurecr.io}"
@@ -39,7 +46,12 @@ MEMORY="${MEMORY:-1Gi}"
 # Preview features required for the "hosted" agent kind.
 FOUNDRY_FEATURES="HostedAgents=V1Preview,WorkflowAgents=V1Preview,AgentEndpoints=V1Preview,CodeAgents=V1Preview,ExternalAgents=V1Preview,AgentsOptimization=V1Preview"
 
-BODY="{\"definition\":{\"kind\":\"hosted\",\"cpu\":\"${CPU}\",\"memory\":\"${MEMORY}\",\"container_configuration\":{\"image\":\"${ACR_LOGIN_SERVER}/${AGENT_NAME}:${TAG}\"},\"environment_variables\":${ENV_VARS_JSON},\"protocol_versions\":[{\"protocol\":\"responses\",\"version\":\"2.0.0\"}]}}"
+DESCRIPTION_FIELD=""
+if [ -n "$DESCRIPTION" ]; then
+  DESCRIPTION_FIELD="\"description\":\"${DESCRIPTION}\","
+fi
+
+BODY="{${DESCRIPTION_FIELD}\"definition\":{\"kind\":\"hosted\",\"cpu\":\"${CPU}\",\"memory\":\"${MEMORY}\",\"container_configuration\":{\"image\":\"${ACR_LOGIN_SERVER}/${AGENT_NAME}:${TAG}\"},\"environment_variables\":${ENV_VARS_JSON},\"protocol_versions\":[{\"protocol\":\"responses\",\"version\":\"2.0.0\"}]}}"
 
 az rest --method post \
   --url "${PROJECT_ENDPOINT}/agents/${AGENT_NAME}/versions?api-version=v1" \
