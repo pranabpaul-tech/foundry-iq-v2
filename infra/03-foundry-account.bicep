@@ -50,7 +50,7 @@ param searchName string
 param storageName string
 
 @description('Name of the existing ACR (public, IP-allowlisted -- used for az acr build, not privately linked).')
-param acrName string = 'acrfoundryiqv2pau4'
+param acrName string = 'foundryiqv2acr'
 
 @description('Name of the new (already privately-linked) Cosmos DB account from Phase 2.')
 param cosmosName string
@@ -58,7 +58,7 @@ param cosmosName string
 @description('Resource ID of the private endpoint subnet, for the account\'s own private endpoint.')
 param peSubnetId string
 
-var suffix = take(uniqueString(resourceGroup().id, 'phase3'), 4)
+var suffix = take(uniqueString(resourceGroup().id, 'phase3v2'), 4)
 var accountName = toLower('${baseName}${suffix}')
 
 // ---------- account ----------

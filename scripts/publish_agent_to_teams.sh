@@ -26,7 +26,7 @@ set -eu
 AGENT_NAME="${1:?Usage: publish_agent_to_teams.sh <agent-name> [publishScope]}"
 PUBLISH_SCOPE="${2:-Shared}"
 
-PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2p3ygk.services.ai.azure.com/api/projects/iqv2project}"
+PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
 
 RESPONSE=$(az rest --method post \
   --url "${PROJECT_ENDPOINT}/agents/${AGENT_NAME}/microsoft365/publish?api-version=v1" \

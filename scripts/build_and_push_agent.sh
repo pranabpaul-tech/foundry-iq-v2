@@ -17,7 +17,7 @@
 set -eu
 
 AGENT_NAME="${1:?Usage: build_and_push_agent.sh <agent-name>}"
-ACR_NAME="${ACR_NAME:-acrfoundryiqv2pau4}"
+ACR_NAME="${ACR_NAME:-foundryiqv2acr}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-foundryiq-v2}"
 REPO_URL="${REPO_URL:-https://github.com/pranabpaul-tech/foundry-iq-v2.git}"
 BRANCH="${BRANCH:-main}"

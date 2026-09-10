@@ -72,9 +72,9 @@ create_item_if_missing() {
     --body "{\"displayName\":\"${item_name}\",\"type\":\"${item_type}\"}"
 }
 
-create_item_if_missing "aw-docs-lakehouse" "Lakehouse"
-create_item_if_missing "aw-docs-ontology" "Ontology"
-create_item_if_missing "aw-sales-data-agent" "DataAgent"
+create_item_if_missing "aw_docs_lakehouse" "Lakehouse"
+create_item_if_missing "aw_docs_ontology" "Ontology"
+create_item_if_missing "aw_sales_data_agent" "DataAgent"
 
 echo ""
 echo "Done. Workspace ID: ${WORKSPACE_ID}"

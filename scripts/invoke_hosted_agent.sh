@@ -20,7 +20,7 @@ AGENT_NAME="${1:?Usage: invoke_hosted_agent.sh <agent-name> <question>}"
 shift
 QUESTION="$*"
 
-PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2p3ygk.services.ai.azure.com/api/projects/iqv2project}"
+PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
 
 # Minimal JSON-string escaping for the question (double quotes/backslashes only).
 ESCAPED=$(printf '%s' "$QUESTION" | sed 's/\\/\\\\/g; s/"/\\"/g')

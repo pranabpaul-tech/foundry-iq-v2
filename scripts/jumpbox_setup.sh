@@ -22,13 +22,20 @@ set -eu
 REPO_URL="${REPO_URL:-https://github.com/pranabpaul-tech/foundry-iq-v2}"
 BRANCH="${BRANCH:-main}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-foundryiq-v2}"
-ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2p3ygk}"
+ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2pbmgl}"
 PROJECT_NAME="${PROJECT_NAME:-iqv2project}"
 PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://${ACCOUNT_NAME}.services.ai.azure.com/api/projects/${PROJECT_NAME}}"
-SEARCH_NAME="${SEARCH_NAME:-foundryiqv2pau4search}"
+SEARCH_NAME="${SEARCH_NAME:-foundryiqv2search}"
 SEARCH_ENDPOINT="${SEARCH_ENDPOINT:-https://${SEARCH_NAME}.search.windows.net}"
+OPENAI_ENDPOINT="${AZURE_OPENAI_ENDPOINT:-https://${ACCOUNT_NAME}.openai.azure.com/}"
+ACR_LOGIN_SERVER="${ACR_LOGIN_SERVER:-foundryiqv2acr.azurecr.io}"
 MODEL="${AZURE_AI_MODEL_DEPLOYMENT_NAME:-gpt-4.1}"
 KB_NAME="${AZURE_SEARCH_KNOWLEDGE_BASE_NAME:-aw-knowledge-base}"
+
+# register_hosted_agent.sh is invoked below as a separate process (sh
+# scripts/register_hosted_agent.sh) -- it needs PROJECT_ENDPOINT and
+# ACR_LOGIN_SERVER in its own environment, not just as shell variables here.
+export PROJECT_ENDPOINT ACR_LOGIN_SERVER
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 SEARCH_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Search/searchServices/${SEARCH_NAME}"
@@ -43,6 +50,7 @@ python3 -m pip install --quiet -r scripts/requirements.txt
 
 echo "==> Building the knowledge base"
 AZURE_SEARCH_ENDPOINT="$SEARCH_ENDPOINT" \
+AZURE_OPENAI_ENDPOINT="$OPENAI_ENDPOINT" \
 AZURE_AI_MODEL_DEPLOYMENT_NAME="$MODEL" \
 python3 scripts/build_search_index.py
 

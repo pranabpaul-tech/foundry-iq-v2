@@ -19,7 +19,7 @@ flowchart TB
 
         subgraph vnet["VNet: foundryiqv2-vnet"]
             subgraph agentSubnet["agent-subnet<br/>(delegated: Microsoft.App/environments)"]
-                foundry["Foundry account foundryiqv2p3ygk<br/>publicNetworkAccess: Disabled<br/>+ service-managed public exception<br/>for Activity Protocol only"]
+                foundry["Foundry account foundryiqv2pbmgl<br/>publicNetworkAccess: Disabled<br/>+ service-managed public exception<br/>for Activity Protocol only"]
                 orchestrator["orchestrator-agent (hosted)"]
                 kbInproc["kb_agent (in-process tool)"]
                 courierInproc["courier_agent (in-process tool)"]
@@ -45,9 +45,9 @@ flowchart TB
             mcpSubnet["mcp-subnet (reserved, unused)"]
         end
 
-        search["AI Search foundryiqv2pau4search<br/>aw-docs-index -- publicNetworkAccess: Disabled"]
-        storage["Storage foundryiqv2pau4stor<br/>aw-docs container"]
-        acr["ACR acrfoundryiqv2pau4 -- stays public"]
+        search["AI Search foundryiqv2search<br/>aw-docs-index -- publicNetworkAccess: Disabled"]
+        storage["Storage foundryiqv2storage<br/>aw-docs container"]
+        acr["ACR foundryiqv2acr -- stays public"]
         cosmos["Cosmos DB foundryiqv25hdbcosmos"]
         fabric["Fabric capacity foundryiqv2fabric<br/>(F64, this resource group)"]
     end
@@ -121,11 +121,11 @@ script's own hardcoded defaults if your resource names match this project's.
 
 ## Resources (`rg-foundryiq-v2`, UK South)
 
-- `foundryiqv2p3ygk` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
+- `foundryiqv2pbmgl` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
 - `foundryiqv2-vnet` — VNet, 4 subnets (agent, pe, mcp, jumpbox), 12 private DNS zones
-- `foundryiqv2pau4search` — AI Search (semantic search, index `aw-docs-index`) — `publicNetworkAccess: Disabled`, private endpoint only (flipped by `infra/hooks/postprovision.sh`; the knowledge-base build now runs from the jumpbox — see "Knowledge base" below)
-- `foundryiqv2pau4stor` — Storage (`aw-docs` container) — public network access locked `Disabled` by tenant policy; private endpoint added
-- `acrfoundryiqv2pau4` — ACR (Premium) — stays public (used by `az acr build`), private endpoint added alongside
+- `foundryiqv2search` — AI Search (semantic search, index `aw-docs-index`) — `publicNetworkAccess: Disabled`, AAD auth enabled, private endpoint only (flipped by `infra/hooks/postprovision.sh`; the knowledge-base build now runs from the jumpbox — see "Knowledge base" below)
+- `foundryiqv2storage` — Storage (`aw-docs` container) — public network access locked `Disabled` by tenant policy; private endpoint added
+- `foundryiqv2acr` — ACR (Premium) — stays public (used by `az acr build`), private endpoint added alongside
 - `foundryiqv25hdbcosmos` — Cosmos DB for NoSQL (required by Foundry's standard agent setup) — private endpoint only
 - `law-foundryiqv2-*` — Log Analytics workspace (Application Insights / agent tracing)
 - `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — shell access via `az container exec`, no VM/Bastion
@@ -306,7 +306,7 @@ there). Two steps instead:
 1. **Build + push the image** (from a normal dev machine — ACR stayed public):
    `scripts/build_and_push_agent.sh kb-agent`
 2. **Register the agent version** (from inside the jumpbox — data-plane call to the
-   private project): `scripts/register_hosted_agent.sh kb-agent '{"AZURE_AI_MODEL_DEPLOYMENT_NAME":"gpt-4.1","AZURE_SEARCH_ENDPOINT":"https://foundryiqv2pau4search.search.windows.net","AZURE_SEARCH_KNOWLEDGE_BASE_NAME":"aw-knowledge-base"}'`
+   private project): `scripts/register_hosted_agent.sh kb-agent '{"AZURE_AI_MODEL_DEPLOYMENT_NAME":"gpt-4.1","AZURE_SEARCH_ENDPOINT":"https://foundryiqv2search.search.windows.net","AZURE_SEARCH_KNOWLEDGE_BASE_NAME":"aw-knowledge-base"}'`
    (Don't set `FOUNDRY_PROJECT_ENDPOINT` or any other `FOUNDRY_*`/`AGENT_*` var yourself
    — reserved, auto-injected by the platform.)
 3. Grant the new agent's `AgentIdentity` (`instance_identity.principal_id` in the

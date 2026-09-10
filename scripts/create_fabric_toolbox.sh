@@ -18,7 +18,7 @@ DATA_AGENT_ID="${2:?Usage: create_fabric_toolbox.sh <fabric-workspace-id> <fabri
 
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-f26d977d-4a4e-45b3-b4a8-68d268c44852}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-foundryiq-v2}"
-ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2p3ygk}"
+ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2pbmgl}"
 PROJECT_NAME="${PROJECT_NAME:-iqv2project}"
 PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://${ACCOUNT_NAME}.services.ai.azure.com/api/projects/${PROJECT_NAME}}"
 CONNECTION_NAME="${CONNECTION_NAME:-fabric-dataagent-obo}"

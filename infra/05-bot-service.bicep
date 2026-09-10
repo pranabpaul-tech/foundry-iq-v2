@@ -58,7 +58,7 @@ param msaAppId string
 param tenantId string
 
 @description('Orchestrator agent Activity Protocol endpoint.')
-param endpoint string = 'https://foundryiqv2p3ygk.services.ai.azure.com/api/projects/iqv2project/agents/orchestrator-agent/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview'
+param endpoint string = 'https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project/agents/orchestrator-agent/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview'
 
 @description('Bot Service SKU. F0 is the free tier.')
 param botServiceSku string = 'F0'

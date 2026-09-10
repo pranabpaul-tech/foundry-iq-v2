@@ -24,7 +24,7 @@ set -eu
 AGENT_NAME="${1:?Usage: enable_agent_teams_endpoint.sh <agent-name> [BotServiceRbac|BotServiceTenant]}"
 AUTH_SCHEME="${2:-BotServiceTenant}"
 
-PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2p3ygk.services.ai.azure.com/api/projects/iqv2project}"
+PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
 
 # This PATCH replaces protocol_configuration and authorization_schemes
 # wholesale -- keep "responses" and "Entra" here or the endpoint loses them.
