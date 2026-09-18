@@ -12,6 +12,7 @@ flowchart TB
     subgraph internet["Internet"]
         teamsUser["Teams user<br/>(tenant member)"]
         devMachine["Normal dev machine<br/>(azd provision, build_and_push_agent.sh)"]
+        teamsApp["Teams app (M365 catalog)<br/>teamsAppId, from publish_agent_to_teams.sh<br/>deep link: teams.microsoft.com/l/app/&lt;teamsAppId&gt;"]
     end
 
     subgraph azure["Azure -- rg-foundryiq-v2 (UK South)"]
@@ -54,7 +55,8 @@ flowchart TB
         fabric["Fabric capacity foundryiqv2fabric<br/>(F8, this resource group)"]
     end
 
-    teamsUser -- "Teams message" --> botService
+    teamsUser -- "opens deep link, chats" --> teamsApp
+    teamsApp -- "resolves to" --> botService
     botService -- "Activity Protocol<br/>(source-IP-filtered exception)" --> foundry
     devMachine -. "azd provision, build/push image (public)" .-> acr
 
