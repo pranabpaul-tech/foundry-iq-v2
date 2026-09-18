@@ -10,6 +10,12 @@
 # works while the capacity is Active -- resume it before testing, suspend
 # it afterward to stop billing.
 #
+# Idempotent -- checks current state first and no-ops if already there. A
+# fresh capacity starts Active (nothing to resume from), and Fabric's REST
+# API rejects a resume/suspend action targeting the state it's already in
+# with "Service is not ready to be updated" (BadRequest, subCode 7) rather
+# than treating it as a no-op.
+#
 # Usage: ./set_fabric_capacity_state.sh resume|suspend [capacity-name]
 
 set -eu
@@ -24,6 +30,16 @@ case "$ACTION" in
   resume|suspend) ;;
   *) echo "Usage: set_fabric_capacity_state.sh resume|suspend [capacity-name]" >&2; exit 1 ;;
 esac
+
+TARGET_STATE="Active"
+[ "$ACTION" = "suspend" ] && TARGET_STATE="Paused"
+
+CURRENT_STATE=$(az resource show -g "$RESOURCE_GROUP" -n "$CAPACITY_NAME" \
+  --resource-type Microsoft.Fabric/capacities --query properties.state -o tsv)
+if [ "$CURRENT_STATE" = "$TARGET_STATE" ]; then
+  echo "${CAPACITY_NAME} is already ${CURRENT_STATE} -- nothing to do."
+  exit 0
+fi
 
 az rest --method post \
   --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Fabric/capacities/${CAPACITY_NAME}/${ACTION}?api-version=2023-11-01"
