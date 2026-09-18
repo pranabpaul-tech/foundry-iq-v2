@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 #
 # Register one agent as a hosted agent version against the private project
-# (foundryiqv2pbmgl/iqv2project). This is a DATA-PLANE call to the project
+# (foundryiqv2ppwne/iqv2project). This is a DATA-PLANE call to the project
 # endpoint, unreachable from outside the VNet -- run this from inside the
 # jumpbox (infra/04-jumpbox.bicep), after `az login` there and after the
 # image has been pushed to ACR (build_and_push_agent.sh, run from outside
@@ -37,7 +37,7 @@ AGENT_NAME="${1:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json> [d
 ENV_VARS_JSON="${2:?Usage: register_hosted_agent.sh <agent-name> <env-vars-json> [description]}"
 DESCRIPTION="${3:-}"
 
-PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
+PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2ppwne.services.ai.azure.com/api/projects/iqv2project}"
 ACR_LOGIN_SERVER="${ACR_LOGIN_SERVER:-foundryiqv2acr.azurecr.io}"
 TAG="${TAG:-v1}"
 CPU="${CPU:-0.5}"

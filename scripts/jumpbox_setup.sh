@@ -22,7 +22,7 @@ set -eu
 REPO_URL="${REPO_URL:-https://github.com/pranabpaul-tech/foundry-iq-v2}"
 BRANCH="${BRANCH:-main}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-foundryiq-v2}"
-ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2pbmgl}"
+ACCOUNT_NAME="${ACCOUNT_NAME:-foundryiqv2ppwne}"
 PROJECT_NAME="${PROJECT_NAME:-iqv2project}"
 PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://${ACCOUNT_NAME}.services.ai.azure.com/api/projects/${PROJECT_NAME}}"
 SEARCH_NAME="${SEARCH_NAME:-foundryiqv2search}"

@@ -19,7 +19,7 @@ flowchart TB
 
         subgraph vnet["VNet: foundryiqv2-vnet"]
             subgraph agentSubnet["agent-subnet<br/>(delegated: Microsoft.App/environments)"]
-                foundry["Foundry account foundryiqv2pbmgl<br/>publicNetworkAccess: Disabled<br/>+ service-managed public exception<br/>for Activity Protocol only"]
+                foundry["Foundry account foundryiqv2ppwne<br/>publicNetworkAccess: Disabled<br/>+ service-managed public exception<br/>for Activity Protocol only"]
                 orchestrator["orchestrator-agent (hosted)"]
                 kbInproc["kb_agent (in-process tool)"]
                 courierInproc["courier_agent (in-process tool)"]
@@ -124,7 +124,7 @@ script's own hardcoded defaults if your resource names match this project's.
 
 ## Resources (`rg-foundryiq-v2`, UK South)
 
-- `foundryiqv2pbmgl` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
+- `foundryiqv2ppwne` — Foundry account (network-injected, `publicNetworkAccess: Disabled`) + project `iqv2project`
 - `foundryiqv2-vnet` — VNet, 4 subnets (agent, pe, mcp, jumpbox), 12 private DNS zones
 - `foundryiqv2search` — AI Search (semantic search, index `aw-docs-index`) — `publicNetworkAccess: Disabled`, AAD auth enabled, private endpoint only (flipped by `infra/hooks/postprovision.sh`; the knowledge-base build now runs from the jumpbox — see "Knowledge base" below)
 - `foundryiqv2storage` — Storage (`aw-docs` container) — public network access locked `Disabled` by tenant policy; private endpoint added

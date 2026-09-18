@@ -33,7 +33,7 @@ set -eu
 AGENT_NAME="${1:?Usage: publish_agent_to_teams.sh <agent-name> [publishScope]}"
 PUBLISH_SCOPE="${2:-Shared}"
 
-PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2pbmgl.services.ai.azure.com/api/projects/iqv2project}"
+PROJECT_ENDPOINT="${PROJECT_ENDPOINT:-https://foundryiqv2ppwne.services.ai.azure.com/api/projects/iqv2project}"
 SHORT_DESCRIPTION="${SHORT_DESCRIPTION:-Adventure Works multi-agent assistant}"
 FULL_DESCRIPTION="${FULL_DESCRIPTION:-Adventure Works multi-agent assistant for support, shipping, and sales questions}"
 DEVELOPER_NAME="${DEVELOPER_NAME:-Adventure Works}"
