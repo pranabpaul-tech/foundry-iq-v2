@@ -31,6 +31,8 @@ OPENAI_ENDPOINT="${AZURE_OPENAI_ENDPOINT:-https://${ACCOUNT_NAME}.openai.azure.c
 ACR_LOGIN_SERVER="${ACR_LOGIN_SERVER:-foundryiqv2acr.azurecr.io}"
 MODEL="${AZURE_AI_MODEL_DEPLOYMENT_NAME:-gpt-4.1}"
 KB_NAME="${AZURE_SEARCH_KNOWLEDGE_BASE_NAME:-aw-knowledge-base}"
+FABRIC_WORKSPACE_NAME="${FABRIC_WORKSPACE_NAME:-foundryiq-workspace}"
+FABRIC_API="https://api.fabric.microsoft.com/v1"
 
 # register_hosted_agent.sh is invoked below as a separate process (sh
 # scripts/register_hosted_agent.sh) -- it needs PROJECT_ENDPOINT and
@@ -89,8 +91,28 @@ sh scripts/register_hosted_agent.sh courier-agent \
   >/dev/null
 # No RBAC needed -- courier-agent only uses the native WebSearchTool.
 
+echo "==> Registering lakehouse-agent"
+sh scripts/register_hosted_agent.sh lakehouse-agent \
+  "{\"AZURE_AI_MODEL_DEPLOYMENT_NAME\":\"${MODEL}\",\"FABRIC_WORKSPACE_NAME\":\"${FABRIC_WORKSPACE_NAME}\"}" \
+  >/dev/null
+lakehouse_principal_id=$(az rest --method get --url "${PROJECT_ENDPOINT}/agents/lakehouse-agent?api-version=v1" \
+  --resource https://ai.azure.com --query instance_identity.principal_id -o tsv)
+echo "    granting Fabric workspace Viewer role to lakehouse-agent (${lakehouse_principal_id})"
+fabric_token=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+fabric_workspace_id=$(curl -s -H "Authorization: Bearer ${fabric_token}" "${FABRIC_API}/workspaces" \
+  | python3 -c "import json,sys; print(next(w['id'] for w in json.load(sys.stdin)['value'] if w['displayName']=='${FABRIC_WORKSPACE_NAME}'))")
+curl -s -X POST -H "Authorization: Bearer ${fabric_token}" -H "Content-Type: application/json" \
+  -d "{\"principal\":{\"id\":\"${lakehouse_principal_id}\",\"type\":\"ServicePrincipal\"},\"role\":\"Viewer\"}" \
+  "${FABRIC_API}/workspaces/${fabric_workspace_id}/roleAssignments" >/dev/null
+# orchestrator-agent also runs the same SQL tool in-process (as lakehouse_agent) --
+# grant it the same Fabric workspace role.
+echo "    granting Fabric workspace Viewer role to orchestrator-agent (${orchestrator_principal_id})"
+curl -s -X POST -H "Authorization: Bearer ${fabric_token}" -H "Content-Type: application/json" \
+  -d "{\"principal\":{\"id\":\"${orchestrator_principal_id}\",\"type\":\"ServicePrincipal\"},\"role\":\"Viewer\"}" \
+  "${FABRIC_API}/workspaces/${fabric_workspace_id}/roleAssignments" >/dev/null
+
 echo ""
-echo "Done. All three agents registered and RBAC-granted."
+echo "Done. All four agents registered and RBAC-granted."
 echo "Test: scripts/invoke_hosted_agent.sh kb-agent \"What is Adventure Works' refund policy?\""
 echo "Next: the Fabric toolbox connection (scripts/create_fabric_toolbox.sh) and,"
 echo "optionally, Bot Service / Teams -- see README.md."

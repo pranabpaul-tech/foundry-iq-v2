@@ -1,6 +1,6 @@
 # Foundry IQ v2 — Private Multi-Agent Orchestration
 
-Three hosted agents (Microsoft Agent Framework, Python) running on a fully
+Four hosted agents (Microsoft Agent Framework, Python) running on a fully
 VNet-integrated Microsoft Foundry environment: `publicNetworkAccess:
 Disabled` on the Foundry account, and every dependent data service behind a
 private endpoint.
@@ -23,10 +23,12 @@ flowchart TB
                 orchestrator["orchestrator-agent (hosted)"]
                 kbInproc["kb_agent (in-process tool)"]
                 courierInproc["courier_agent (in-process tool)"]
+                lakehouseInproc["lakehouse_agent (in-process tool)<br/>direct T-SQL, no Fabric data agent"]
                 toolbox["FoundryToolbox"]
                 foundry --- orchestrator
                 orchestrator --> kbInproc
                 orchestrator --> courierInproc
+                orchestrator --> lakehouseInproc
                 orchestrator --> toolbox
             end
 
@@ -49,7 +51,7 @@ flowchart TB
         storage["Storage foundryiqv2storage<br/>aw-docs container"]
         acr["ACR foundryiqv2acr -- stays public"]
         cosmos["Cosmos DB foundryiqv25hdbcosmos"]
-        fabric["Fabric capacity foundryiqv2fabric<br/>(F64, this resource group)"]
+        fabric["Fabric capacity foundryiqv2fabric<br/>(F8, this resource group)"]
     end
 
     teamsUser -- "Teams message" --> botService
@@ -64,13 +66,14 @@ flowchart TB
 
     kbInproc --> peSearch
     toolbox -- "private link" --> fabric
+    lakehouseInproc -- "private link, SQL analytics endpoint" --> fabric
     jumpbox -. "az login, build index, register agents" .-> foundry
     jumpbox -. "az login, build index" .-> peSearch
 ```
 
-`kb-agent` and `courier-agent` are also independently registered as their own hosted
-agent versions in the same project — reachable directly (from inside the VNet), no
-orchestrator required.
+`kb-agent`, `courier-agent`, and `lakehouse-agent` are also independently registered
+as their own hosted agent versions in the same project — reachable directly (from
+inside the VNet), no orchestrator required.
 
 ## Prerequisites
 
@@ -130,12 +133,12 @@ script's own hardcoded defaults if your resource names match this project's.
 - `law-foundryiqv2-*` — Log Analytics workspace (Application Insights / agent tracing)
 - `ci-foundryiq-jump` — jumpbox (Azure Container Instance in `jumpbox-subnet`) — shell access via `az container exec`, no VM/Bastion
 - `foundryiq-orchestrator-bot` — Bot Service (`publicNetworkAccess: Enabled`), MS Teams channel, fronting `orchestrator-agent` — see "Bot Service / Teams" below
-- `foundryiqv2fabric` — Fabric capacity (F64), under Bicep (`infra/06-fabric-capacity.bicep`); must be **Active** (not Paused) for the Fabric tool to work — see "Fabric capacity & artifacts" below
+- `foundryiqv2fabric` — Fabric capacity (F8), under Bicep (`infra/06-fabric-capacity.bicep`); must be **Active** (not Paused) for the Fabric tool to work — see "Fabric capacity & artifacts" below
 
 ## Repo layout
 
 - `azure.yaml` — the `azd` project definition (infra path + the `postprovision` hook)
-- `agents/` — `kb-agent/`, `courier-agent/`, `orchestrator-agent/` (see "Agents" below)
+- `agents/` — `kb-agent/`, `courier-agent/`, `lakehouse-agent/`, `orchestrator-agent/` (see "Agents" below)
 - `infra/` — `main.bicep` (the `azd provision` entry point) composing the numbered
   Bicep files as modules, plus `hooks/postprovision.sh` (see "Infra" below)
 - `scripts/` — operational scripts (shell + `build_search_index.py`); `jumpbox_setup.sh`
@@ -148,11 +151,14 @@ script's own hardcoded defaults if your resource names match this project's.
 
 - `kb-agent/` — grounded in the Foundry IQ Knowledge Base (Adventure Works PDFs)
 - `courier-agent/` — FedEx/UPS/DHL assistant via the native `WebSearchTool`
-- `orchestrator-agent/` — routes to `kb_agent`/`courier_agent` in-process, and to Fabric
-  via the `fabric-iq-toolbox` toolbox (OBO-enabled — see the toolbox's own
-  `UserEntraToken` connection, `fabric-dataagent-obo`)
+- `lakehouse-agent/` — writes and runs its own T-SQL directly against the Fabric
+  Lakehouse's SQL analytics endpoint (pyodbc + AAD token auth) — no Fabric Data Agent,
+  no toolbox/OBO; see "Two ways to query the Lakehouse" below
+- `orchestrator-agent/` — routes to `kb_agent`/`courier_agent`/`lakehouse_agent`
+  in-process, and to Fabric via the `fabric-iq-toolbox` toolbox (OBO-enabled — see the
+  toolbox's own `UserEntraToken` connection, `fabric-dataagent-obo`)
 
-`kb_agent`/`courier_agent` are wired into the orchestrator in-process
+`kb_agent`/`courier_agent`/`lakehouse_agent` are wired into the orchestrator in-process
 (`agent_framework.Agent.as_tool()`), not via Foundry-to-Foundry A2A.
 
 ## Infra (`infra/`)
@@ -257,7 +263,9 @@ see "Bot Service / Teams" below.
    it and splits on whitespace with no quote preservation, so a pipe never survives
    it. See the comment at the top of `scripts/jumpbox_setup.sh`.) This one script
    installs its own Python, builds the knowledge base (see "Knowledge base" below),
-   and registers + RBAC-grants all three agents.
+   and registers + RBAC-grants all four agents (including granting `lakehouse-agent`
+   and `orchestrator-agent` the Fabric workspace Viewer role they need for direct
+   SQL access to the Lakehouse).
 
 5. **Configure the Fabric Data Agent with real data, then create the toolbox
    connection**, from inside the jumpbox (see "Fabric capacity & artifacts" below for
@@ -401,19 +409,19 @@ Reference: [Publish an agent as a Bot Service behind a VNet](https://learn.micro
 
 ## Fabric capacity & artifacts
 
-The Fabric capacity lives in this resource group as `foundryiqv2fabric` (F64), under
+The Fabric capacity lives in this resource group as `foundryiqv2fabric` (F8), under
 Bicep (`infra/06-fabric-capacity.bicep`, composed into `infra/main.bicep` — deployed
 automatically by `azd provision`, no separate step needed).
 
 `Microsoft.Fabric/capacities` is a real ARM resource type — the capacity itself is
 fully Bicep-managed. Everything *inside* Fabric — workspaces, and every item type in
-them (Lakehouse, Data Agent, Ontology, notebooks, etc.) — has **no ARM resource type at
+them (Lakehouse, Data Agent, notebooks, etc.) — has **no ARM resource type at
 all**; those are reachable only through the Fabric REST API
 (`api.fabric.microsoft.com`), the same way `scripts/create_fabric_toolbox.sh` talks to
 Fabric for the OBO connection. `scripts/provision_fabric_workspace.sh` is the
 script-based equivalent for those — idempotent find-or-create for a workspace
-(assigned to this capacity) plus Lakehouse and Data Agent item shells in it (and an
-Ontology shell too, *if* that item type is enabled in your tenant — see the callout
+(assigned to this capacity) plus Lakehouse and Data Agent item shells in it. No
+Ontology item — this project doesn't use one (see "Two ways to query the Lakehouse"
 below).
 
 `state` (Active/Paused) is a read-only ARM property — Bicep/PUT can't set it, only a
@@ -466,14 +474,27 @@ clean removal does: push an `updateDefinition` with no datasource part at all (s
 script for the two-part minimal definition), publish that empty state, then re-run
 `provision_fabric_sales_agent.py` to re-add it.
 
-**Ontology:** some Fabric tenants/capacities reject `Ontology` item creation outright
-(`Forbidden: FeatureNotAvailable`) — a tenant-level preview-feature gate, not something
-fixable from this repo or via the REST API (checking or changing it needs Fabric
-tenant-admin rights, a `Tenant.Read.All`-scoped call this project's identities don't
-have). If your tenant has it enabled, building entities/relationships over these same
-Lakehouse tables and pointing the Data Agent at the ontology (`type: "graph"` in its
-datasource config) instead of the tables directly is a reasonable variant to try — it
-wasn't possible to validate end-to-end here for exactly that reason.
+### Two ways to query the Lakehouse
+
+`orchestrator-agent` has two separate tools over the same underlying Lakehouse data,
+and picks between them based on the instructions in `agents/orchestrator-agent/main.py`:
+
+- **Fabric data agent** (`fabric_toolbox`, the default) — natural language is handled
+  entirely by the Fabric Data Agent's own NL2SQL layer (see above), via a Foundry
+  toolbox/OBO connection (`scripts/create_fabric_toolbox.sh`).
+- **`lakehouse_agent`** — bypasses the Fabric Data Agent entirely. It writes its own
+  T-SQL and runs it directly against the Lakehouse's SQL analytics endpoint (`agents/
+  lakehouse-agent/main.py`), authenticating as its own AgentIdentity via
+  `DefaultAzureCredential` (Fabric REST API to resolve the SQL endpoint by workspace/
+  Lakehouse display name, then the standard `SQL_COPT_SS_ACCESS_TOKEN` pyodbc pattern
+  for AAD-token auth to the endpoint itself). Needs the Fabric workspace **Viewer**
+  role, granted to both `lakehouse-agent`'s and `orchestrator-agent`'s AgentIdentity in
+  `scripts/jumpbox_setup.sh`. It's also registered as its own independently-invokable
+  hosted agent, same as `kb-agent`/`courier-agent`.
+
+`orchestrator-agent`'s instructions route to `fabric_toolbox` by default for a
+structured-data question, and only to `lakehouse_agent` when explicitly asked to query
+the Lakehouse directly, run raw SQL, or bypass the Fabric data agent.
 
 ## Verification
 
@@ -481,11 +502,13 @@ wasn't possible to validate end-to-end here for exactly that reason.
   `192.168.1.x` address, not a public one.
 - Public internet access to the Foundry account's endpoint fails with 403
   (`Public access is disabled. Please configure private endpoint.`).
-- Each of the three agents answers correctly when invoked from the jumpbox — confirmed
+- Each of the four agents answers correctly when invoked from the jumpbox — confirmed
   end-to-end: kb-agent (KB citation), courier-agent (live web search with citations),
   orchestrator-agent (routed to the Fabric toolbox, returned real joined data from the
   AdventureWorks tables — e.g. correct per-category sales totals and the right
-  salesperson by order *count* vs. by total sale value).
+  salesperson by order *count* vs. by total sale value), lakehouse-agent (writes its
+  own T-SQL and returns the same joined data straight from the SQL analytics
+  endpoint, no Fabric data agent involved).
 - The Teams-published bot responds in a real Teams client (`teamsAppId` from
   `publish_agent_to_teams.sh`'s output; deep link
   `https://teams.microsoft.com/l/app/<teamsAppId>`) — needs a human tenant member

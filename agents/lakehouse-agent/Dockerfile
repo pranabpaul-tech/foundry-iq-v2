@@ -5,10 +5,9 @@ WORKDIR /app
 COPY . user_agent/
 WORKDIR /app/user_agent
 
-# msodbcsql18 (ODBC Driver 18 for SQL Server) -- needed by pyodbc for the
-# in-process lakehouse_agent tool's direct query against the Fabric
-# Lakehouse SQL analytics endpoint. python:3.12-slim is Debian 12
-# (bookworm)-based.
+# msodbcsql18 (ODBC Driver 18 for SQL Server) -- needed by pyodbc to connect
+# to the Fabric Lakehouse SQL analytics endpoint. python:3.12-slim is
+# Debian 12 (bookworm)-based.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl gnupg unixodbc-dev \
     && curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb \

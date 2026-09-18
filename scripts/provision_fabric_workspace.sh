@@ -2,21 +2,25 @@
 # Copyright (c) Microsoft. All rights reserved.
 #
 # Provision a Fabric workspace (assigned to infra/06-fabric-capacity.bicep's
-# capacity) plus empty Lakehouse, Ontology, and Data Agent item shells in
-# it. This is the workspace/item-level equivalent of Bicep for Fabric --
-# there IS no ARM/Bicep resource type for workspaces or items (only the
-# capacity itself is ARM, see infra/06-fabric-capacity.bicep), so this talks
-# to the Fabric REST API (api.fabric.microsoft.com) directly, the same way
+# capacity) plus empty Lakehouse and Data Agent item shells in it. This is
+# the workspace/item-level equivalent of Bicep for Fabric -- there IS no
+# ARM/Bicep resource type for workspaces or items (only the capacity itself
+# is ARM, see infra/06-fabric-capacity.bicep), so this talks to the Fabric
+# REST API (api.fabric.microsoft.com) directly, the same way
 # scripts/create_fabric_toolbox.sh already does for the OBO connection.
+#
+# No Ontology item -- this project doesn't use one (the Data Agent and
+# lakehouse_agent both query the Lakehouse tables directly), and some
+# Fabric tenants/capacities reject Ontology item creation outright anyway
+# (Forbidden: FeatureNotAvailable, a tenant-level preview-feature gate).
 #
 # Idempotent: re-running with the same names finds and reuses the existing
 # workspace/items instead of erroring or duplicating them.
 #
-# Items created here are empty shells -- a Lakehouse with no tables, an
-# Ontology with no schema, a Data Agent with no configured data sources.
-# Configuring them (tables, ontology schema, the Data Agent's data source
-# + published instructions) is a Fabric-portal or Fabric-SDK task, not
-# something a single REST POST can express -- point
+# Items created here are empty shells -- a Lakehouse with no tables, a Data
+# Agent with no configured data sources. Configuring them (tables, the Data
+# Agent's data source + published instructions) is a Fabric-portal or
+# Fabric-SDK task, not something a single REST POST can express -- point
 # scripts/create_fabric_toolbox.sh at the Data Agent's ID once it's
 # configured.
 #
@@ -73,11 +77,10 @@ create_item_if_missing() {
 }
 
 create_item_if_missing "aw_docs_lakehouse" "Lakehouse"
-create_item_if_missing "aw_docs_ontology" "Ontology"
 create_item_if_missing "aw_sales_data_agent" "DataAgent"
 
 echo ""
 echo "Done. Workspace ID: ${WORKSPACE_ID}"
-echo "Configure the Ontology schema, load the Lakehouse, and wire the Data"
-echo "Agent's data source + instructions from the Fabric portal, then run:"
+echo "Load the Lakehouse and wire the Data Agent's data source + instructions"
+echo "(scripts/provision_fabric_sales_agent.py does both), then run:"
 echo "  scripts/create_fabric_toolbox.sh ${WORKSPACE_ID} <data-agent-id>"

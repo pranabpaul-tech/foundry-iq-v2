@@ -58,7 +58,7 @@ param cosmosName string
 @description('Resource ID of the private endpoint subnet, for the account\'s own private endpoint.')
 param peSubnetId string
 
-var suffix = take(uniqueString(resourceGroup().id, 'phase3v2'), 4)
+var suffix = take(uniqueString(resourceGroup().id, 'phase3v3'), 4)
 var accountName = toLower('${baseName}${suffix}')
 
 // ---------- account ----------
@@ -198,6 +198,14 @@ resource project 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-previ
     description: 'Foundry IQ v2 multi-agent project (private/VNet-integrated)'
     displayName: 'Foundry IQ v2 (private)'
   }
+  // Same transient-"Accepted"-state race as accountPe above (account flips
+  // back to Accepted while its model deployments are being written) --
+  // confirmed by hitting RequestConflict ("Another operation is in
+  // progress on the resource ...") on the project PUT without this.
+  dependsOn: [
+    chatDeployment
+    embeddingDeployment
+  ]
 
   resource cosmosConnection 'connections@2025-04-01-preview' = {
     name: cosmosName

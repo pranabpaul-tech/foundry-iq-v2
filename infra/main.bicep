@@ -45,7 +45,7 @@ param projectName string = 'iqv2project'
 param fabricCapacityName string = 'foundryiqv2fabric'
 
 @description('Fabric SKU.')
-param fabricSkuName string = 'F64'
+param fabricSkuName string = 'F8'
 
 @description('Entra UPNs/emails of Fabric capacity administrators.')
 param fabricAdminMembers array = [

@@ -47,8 +47,8 @@ param capacityName string = 'foundryiqv2fabric'
 @description('Region for the capacity -- moving resource group does not move region, and Fabric workspaces are region-pinned to their capacity.')
 param location string = 'West US'
 
-@description('Fabric SKU, e.g. F64.')
-param skuName string = 'F64'
+@description('Fabric SKU, e.g. F8.')
+param skuName string = 'F8'
 
 @description('Entra UPNs/emails of Fabric capacity administrators.')
 param adminMembers array = [

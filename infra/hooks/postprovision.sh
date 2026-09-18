@@ -35,7 +35,7 @@ az search service update \
   --public-network-access disabled
 
 echo "==> Building and pushing agent images (ACR Tasks -- no local Docker needed, ACR stays public)"
-for agent in kb-agent courier-agent orchestrator-agent; do
+for agent in kb-agent courier-agent lakehouse-agent orchestrator-agent; do
   scripts/build_and_push_agent.sh "$agent"
 done
 
